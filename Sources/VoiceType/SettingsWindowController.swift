@@ -124,30 +124,26 @@ final class SettingsWindowController: NSWindowController {
         let cardW: CGFloat = 504
         let cardX: CGFloat = 28
 
-        // MARK: Shortcut card
-        let shortcutCard = makeCard(frame: NSRect(x: cardX, y: 264, width: cardW, height: 150))
+        // MARK: Shortcut card — increased height to avoid crowding
+        let shortcutCard = makeCard(frame: NSRect(x: cardX, y: 250, width: cardW, height: 164))
         effect.addSubview(shortcutCard)
 
         let sHeaderIcon = makeSymbol("keyboard", size: 11, tint: .secondaryLabelColor)
-        sHeaderIcon.frame = NSRect(x: 20, y: 120, width: 14, height: 14)
         shortcutCard.addSubview(sHeaderIcon)
 
         let sHeaderLabel = NSTextField(labelWithString: "SHORTCUT")
         sHeaderLabel.font = .systemFont(ofSize: 10, weight: .semibold)
         sHeaderLabel.textColor = .secondaryLabelColor
-        sHeaderLabel.frame = NSRect(x: 38, y: 119, width: 100, height: 14)
         shortcutCard.addSubview(sHeaderLabel)
 
         let sTitle = NSTextField(labelWithString: "Global shortcut")
         sTitle.font = .systemFont(ofSize: 13.5, weight: .semibold)
         sTitle.textColor = .labelColor
-        sTitle.frame = NSRect(x: 20, y: 96, width: 300, height: 18)
         shortcutCard.addSubview(sTitle)
 
         let sDesc = NSTextField(labelWithString: "Press to show the recording panel. Works in any app.")
         sDesc.font = .systemFont(ofSize: 11, weight: .regular)
         sDesc.textColor = .secondaryLabelColor
-        sDesc.frame = NSRect(x: 20, y: 78, width: 360, height: 14)
         shortcutCard.addSubview(sDesc)
 
         // Shortcut button — keycap style
@@ -160,60 +156,47 @@ final class SettingsWindowController: NSWindowController {
         shortcutButton.layer?.borderWidth = 0.5
         shortcutButton.layer?.borderColor = NSColor.separatorColor.cgColor
         shortcutButton.focusRingType = .none
-        shortcutButton.frame = NSRect(x: 20, y: 28, width: 196, height: 36)
         shortcutCard.addSubview(shortcutButton)
 
-        // Hint and status stacked on right of button
         hintLabel.font = .systemFont(ofSize: 11, weight: .medium)
         hintLabel.textColor = .secondaryLabelColor
-        hintLabel.frame = NSRect(x: 228, y: 48, width: 256, height: 14)
         shortcutCard.addSubview(hintLabel)
 
         statusLabel.font = .systemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .tertiaryLabelColor
-        statusLabel.frame = NSRect(x: 228, y: 28, width: 256, height: 14)
         shortcutCard.addSubview(statusLabel)
 
-        // MARK: Hold card (inside same shortcut card but as row)
-        let holdDivider = NSBox(frame: NSRect(x: 20, y: 64, width: cardW - 40, height: 1))
+        let holdDivider = NSBox(frame: NSRect.zero)
         holdDivider.boxType = .separator
         shortcutCard.addSubview(holdDivider)
 
         holdTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         holdTitleLabel.textColor = .labelColor
-        holdTitleLabel.frame = NSRect(x: 20, y: 38, width: 160, height: 16)
-        // will be repositioned after; actually hold row needs re-layout:
-        // Move hold controls to bottom area of card
-        // We'll re-add hold row at y: 6-30 inside card
-        // Remove previous holdTitle from wrong place and re-add correctly below.
-
-        // Hold row — at bottom of shortcut card
-        let holdRowY: CGFloat = 6
-        holdSwitch.target = self
-        holdSwitch.action = #selector(toggleHoldToTalk)
-        holdSwitch.controlSize = .small
-        holdSwitch.frame = NSRect(x: cardW - 44, y: holdRowY + 6, width: 24, height: 18)
-        holdSwitch.state = AppSettings.shared.holdToTalkEnabled ? .on : .off
-        shortcutCard.addSubview(holdSwitch)
-
-        holdTitleLabel.frame = NSRect(x: 20, y: holdRowY + 12, width: 180, height: 16)
         shortcutCard.addSubview(holdTitleLabel)
 
         holdDescLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
         holdDescLabel.textColor = .tertiaryLabelColor
-        holdDescLabel.frame = NSRect(x: 20, y: holdRowY - 2, width: 360, height: 12)
-        shortcutCard.addSubview(holdDescLabel)
         holdDescLabel.stringValue = "Release to transcribe and paste. Press Esc to cancel."
+        shortcutCard.addSubview(holdDescLabel)
 
-        // Adjust shortcutButton/status frames to account for hold row
-        shortcutButton.frame = NSRect(x: 20, y: 72, width: 196, height: 36)
-        sDesc.frame = NSRect(x: 20, y: 112, width: 360, height: 14)
-        sTitle.frame = NSRect(x: 20, y: 130, width: 300, height: 18)
-        sHeaderIcon.frame = NSRect(x: 20, y: 124, width: 14, height: 14)
-        sHeaderLabel.frame = NSRect(x: 38, y: 123, width: 100, height: 14)
-        hintLabel.frame = NSRect(x: 228, y: 92, width: 256, height: 14)
-        statusLabel.frame = NSRect(x: 228, y: 72, width: 256, height: 14)
-        holdDivider.frame = NSRect(x: 20, y: 58, width: cardW - 40, height: 1)
+        holdSwitch.target = self
+        holdSwitch.action = #selector(toggleHoldToTalk)
+        holdSwitch.controlSize = .small
+        holdSwitch.state = AppSettings.shared.holdToTalkEnabled ? .on : .off
+        shortcutCard.addSubview(holdSwitch)
+
+        // Layout — fixed non-overlapping coordinates
+        sHeaderIcon.frame = NSRect(x: 20, y: 138, width: 14, height: 14)
+        sHeaderLabel.frame = NSRect(x: 38, y: 137, width: 120, height: 14)
+        sTitle.frame = NSRect(x: 20, y: 116, width: 320, height: 18)
+        sDesc.frame = NSRect(x: 20, y: 98, width: 380, height: 14)
+        shortcutButton.frame = NSRect(x: 20, y: 52, width: 196, height: 36)
+        hintLabel.frame = NSRect(x: 228, y: 72, width: 256, height: 14)
+        statusLabel.frame = NSRect(x: 228, y: 52, width: 256, height: 14)
+        holdDivider.frame = NSRect(x: 20, y: 38, width: cardW - 40, height: 1)
+        holdSwitch.frame = NSRect(x: cardW - 46, y: 14, width: 28, height: 18)
+        holdTitleLabel.frame = NSRect(x: 20, y: 18, width: 200, height: 16)
+        holdDescLabel.frame = NSRect(x: 20, y: 4, width: 380, height: 12)
 
         // MARK: API card
         let apiCard = makeCard(frame: NSRect(x: cardX, y: 86, width: cardW, height: 158))
