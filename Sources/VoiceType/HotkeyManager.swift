@@ -3,23 +3,39 @@ import Cocoa
 
 private var _hotKeyRef: EventHotKeyRef?
 private var _handlerRef: EventHandlerRef?
-private var _callback: (() -> Void)?
+private var _onPress: (() -> Void)?
+private var _onRelease: (() -> Void)?
 
 class HotkeyManager {
-    init(callback: @escaping () -> Void) {
-        _callback = callback
+    init(onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+        _onPress = onPress
+        _onRelease = onRelease
+    }
+
+    // Legacy single-callback initializer for backward compatibility
+    convenience init(callback: @escaping () -> Void) {
+        self.init(onPress: callback, onRelease: {})
     }
 
     func register() {
         unregister()
-        var eventSpec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
+        ]
         InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, _ -> OSStatus in _callback?(); return noErr },
-            1, &eventSpec, nil, &_handlerRef
+            { _, event, _ -> OSStatus in
+                guard let e = event else { return noErr }
+                let kind = GetEventKind(e)
+                if kind == UInt32(kEventHotKeyPressed) {
+                    _onPress?()
+                } else if kind == UInt32(kEventHotKeyReleased) {
+                    _onRelease?()
+                }
+                return noErr
+            },
+            2, &specs, nil, &_handlerRef
         )
         let hkID = EventHotKeyID(signature: 0x56545950, id: 1)
         RegisterEventHotKey(AppSettings.shared.hotkeyKeyCode, AppSettings.shared.hotkeyModifiers, hkID,

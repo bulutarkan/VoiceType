@@ -13,7 +13,7 @@ class GroqTranscriptionService {
     func transcribe(audioURL: URL, completion: @escaping (Result<String, Error>) -> Void) {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             try? FileManager.default.removeItem(at: audioURL)
-            completion(.failure(TranscriptionError(message: "Groq API anahtarı eksik. Menü çubuğundan VoiceType > Ayarlar bölümüne geçerli anahtarı ekle.")))
+            completion(.failure(TranscriptionError(message: "Groq API key is missing. Open VoiceType → Settings and add your API key.")))
             return
         }
 
@@ -24,7 +24,7 @@ class GroqTranscriptionService {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         guard let audioData = try? Data(contentsOf: audioURL), !audioData.isEmpty else {
-            completion(.failure(TranscriptionError(message: "Ses dosyası okunamadı veya boş geldi.")))
+            completion(.failure(TranscriptionError(message: "Could not read audio file or file was empty.")))
             return
         }
         var body = Data()
@@ -48,11 +48,11 @@ class GroqTranscriptionService {
 
             guard (200..<300).contains(statusCode) else {
                 if statusCode == 401 {
-                    completion(.failure(TranscriptionError(message: "Groq API anahtarı geçersiz veya süresi dolmuş. Ayarlar bölümünden geçerli bir anahtar gir.")))
+                    completion(.failure(TranscriptionError(message: "Groq API key is invalid or expired. Please update it in Settings.")))
                     return
                 }
                 let detail = responseText.isEmpty ? "HTTP \(statusCode)" : responseText
-                completion(.failure(TranscriptionError(message: "Transkripsiyon servisi hata döndürdü: \(detail)")))
+                completion(.failure(TranscriptionError(message: "Transcription service returned an error: \(detail)")))
                 return
             }
 
@@ -61,7 +61,7 @@ class GroqTranscriptionService {
                 return
             }
 
-            completion(.failure(TranscriptionError(message: "Transkripsiyon boş döndü.")))
+            completion(.failure(TranscriptionError(message: "Transcription came back empty. Try again.")))
         }.resume()
     }
 }

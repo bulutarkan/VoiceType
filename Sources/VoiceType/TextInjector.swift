@@ -36,17 +36,17 @@ class TextInjector {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        // En önemli garanti: transkript her durumda panoda kalsın.
-        // Böylece aktif imlece yazamazsak kullanıcı Cmd+V ile direkt basabilir.
+        // Core guarantee: transcript is always copied to the pasteboard.
+        // If injection fails, user can still press Cmd+V manually.
         copyToPasteboard(text)
+        TranscriptionHistory.shared.add(text)
 
         guard isAccessibilityTrusted else {
             showAccessibilityAlert()
             return
         }
 
-        // Tek güvenilir yol: aktif hedef varsa panodaki metni Cmd+V ile bas.
-        // Hedef element yoksa hiçbir yere rastgele yazma; metin zaten panoda kalıyor.
+        // Only paste if we captured a valid focused element; otherwise keep it in clipboard.
         guard target.element != nil else { return }
 
         pasteIntoOriginalTarget(target)
@@ -59,7 +59,7 @@ class TextInjector {
     }
 
     private static func pasteIntoOriginalTarget(_ target: InjectionTarget) {
-        // Kayıt paneli kapandıktan sonra orijinal uygulamayı tekrar öne alıyoruz.
+        // Bring the original app back to front after the recording panel closes.
         if let app = target.app {
             app.activate(options: [])
         }
@@ -69,9 +69,7 @@ class TextInjector {
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 postCommandV()
-
-                // Bilerek clipboard'u geri almıyoruz.
-                // Paste hedefte çalışmazsa transkript panoda kalmalı; Tarkan'ın istediği güvenli fallback bu.
+                // Intentionally keep clipboard — if paste fails, transcript remains available.
             }
         }
     }
@@ -97,10 +95,10 @@ class TextInjector {
 
     private static func showAccessibilityAlert() {
         let alert = NSAlert()
-        alert.messageText = "Erişilebilirlik İzni Gerekli"
-        alert.informativeText = "Transkript panoya kopyalandı. Otomatik yazmak için VoiceType'a Sistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik izni ver."
-        alert.addButton(withTitle: "Ayarları Aç")
-        alert.addButton(withTitle: "Tamam")
+        alert.messageText = "Accessibility Permission Required"
+        alert.informativeText = "Transcript copied to clipboard. To enable auto-paste, grant VoiceType access in System Settings → Privacy & Security → Accessibility."
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "OK")
         if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
         }

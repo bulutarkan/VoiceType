@@ -18,15 +18,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController = StatusBarController { [weak self] in
             self?.settingsWindowController.show()
         }
-        hotkeyManager = HotkeyManager { [weak self] in
-            DispatchQueue.main.async {
-                if self?.panelController.isVisible == true {
-                    self?.panelController.hide()
-                } else {
-                    self?.panelController.show()
+        hotkeyManager = HotkeyManager(
+            onPress: { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if AppSettings.shared.holdToTalkEnabled {
+                        if !self.panelController.isVisible {
+                            self.panelController.show()
+                        }
+                    } else {
+                        if self.panelController.isVisible {
+                            self.panelController.hide()
+                        } else {
+                            self.panelController.show()
+                        }
+                    }
+                }
+            },
+            onRelease: { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if AppSettings.shared.holdToTalkEnabled, self.panelController.isVisible, !self.panelController.isTranscribing {
+                        self.panelController.confirmFromHold()
+                    }
                 }
             }
-        }
+        )
         settingsWindowController.onShortcutChanged = { [weak self] in
             self?.hotkeyManager.updateShortcut()
             self?.statusBarController.refreshShortcut()

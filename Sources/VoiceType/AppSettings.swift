@@ -8,6 +8,7 @@ final class AppSettings {
         static let hotkeyKeyCode = "hotkeyKeyCode"
         static let hotkeyModifiers = "hotkeyModifiers"
         static let groqAPIKey = "groqAPIKey"
+        static let holdToTalk = "holdToTalkEnabled"
     }
 
     private let defaults = UserDefaults.standard
@@ -39,6 +40,11 @@ final class AppSettings {
     var groqAPIKey: String {
         get { defaults.string(forKey: Key.groqAPIKey) ?? "" }
         set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.groqAPIKey) }
+    }
+
+    var holdToTalkEnabled: Bool {
+        get { defaults.bool(forKey: Key.holdToTalk) }
+        set { defaults.set(newValue, forKey: Key.holdToTalk) }
     }
 }
 
