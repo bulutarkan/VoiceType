@@ -1,3 +1,4 @@
+import AVFoundation
 import Carbon
 import Cocoa
 
@@ -74,6 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         panelController.onActivityChanged = { [weak self] activity in
             self?.statusBarController.setActivity(activity)
+        }
+
+        // Warm CoreAudio device cache off the main thread so the first hotkey
+        // doesn't pay the enumeration cost. Do not touch AVAudioEngine here —
+        // querying inputNode.outputFormat without a running engine can crash
+        // (GetOutputFormat EXC_BAD_ACCESS) on some hardware.
+        DispatchQueue.global(qos: .utility).async {
+            _ = SystemAudioInput.devices()
+            _ = SystemAudioInput.defaultDeviceID()
         }
 
         // Useful for local verification and scripted smoke tests without changing normal menu-bar behavior.

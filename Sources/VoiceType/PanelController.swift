@@ -27,8 +27,9 @@ private enum RecordingPanelMode {
 final class WaveformView: NSView {
     private let halfCount = 18
     private var bars: [CALayer] = []
-    private let barWidth: CGFloat = 2.2
-    private let gap: CGFloat = 1.55
+    private let barWidth: CGFloat = 2.8
+    private let gap: CGFloat = 3.0
+    private var glowLayers: [CALayer] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -37,9 +38,13 @@ final class WaveformView: NSView {
 
         for _ in 0..<(halfCount * 2) {
             let bar = CALayer()
-            bar.backgroundColor = NSColor.white.withAlphaComponent(0.22).cgColor
+            bar.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
             bar.cornerRadius = barWidth / 2
-            bar.masksToBounds = true
+            bar.masksToBounds = false
+            bar.shadowColor = NSColor.white.withAlphaComponent(0.35).cgColor
+            bar.shadowOpacity = 0
+            bar.shadowRadius = 4
+            bar.shadowOffset = .zero
             layer?.addSublayer(bar)
             bars.append(bar)
         }
@@ -48,8 +53,6 @@ final class WaveformView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func update(_ amplitudes: [Float]) {
-        // The newest sample lives at the center and older samples fan out toward
-        // both edges. Nothing scrolls in from an off-screen history buffer.
         let recent = Array(amplitudes.suffix(halfCount))
         let totalWidth = CGFloat(bars.count) * (barWidth + gap) - gap
         let startX = (bounds.width - totalWidth) / 2
@@ -57,7 +60,7 @@ final class WaveformView: NSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(false)
-        CATransaction.setAnimationDuration(0.055)
+        CATransaction.setAnimationDuration(0.065)
 
         for (index, bar) in bars.enumerated() {
             let distanceFromCenter = index < halfCount
@@ -66,7 +69,8 @@ final class WaveformView: NSView {
             let sourceIndex = recent.count - 1 - distanceFromCenter
             let rawAmplitude = sourceIndex >= 0 ? recent[sourceIndex] : 0
             let amplitude = CGFloat(rawAmplitude)
-            let height = max(2.2, pow(amplitude, 0.82) * bounds.height * 0.82)
+            // More lively curve
+            let height = max(3.0, pow(amplitude, 0.72) * bounds.height * 0.88)
 
             bar.frame = CGRect(
                 x: startX + CGFloat(index) * (barWidth + gap),
@@ -75,12 +79,46 @@ final class WaveformView: NSView {
                 height: height
             )
 
-            let alpha: CGFloat = amplitude > 0.55 ? 1.0 : amplitude > 0.22 ? 0.72 : amplitude > 0.05 ? 0.42 : 0.20
+            // Alpha + glow based on amplitude
+            let alpha: CGFloat
+            let glow: Float
+            if amplitude > 0.62 {
+                alpha = 1.0
+                glow = 0.85
+            } else if amplitude > 0.30 {
+                alpha = 0.78
+                glow = 0.45
+            } else if amplitude > 0.08 {
+                alpha = 0.48
+                glow = 0.18
+            } else {
+                alpha = 0.22
+                glow = 0
+            }
             bar.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
-            bar.opacity = Float(alpha)
+            bar.opacity = Float(alpha * 0.96 + 0.04)
+            bar.shadowOpacity = glow
+            bar.cornerRadius = barWidth / 2
         }
 
         CATransaction.commit()
+    }
+
+    func setIdleBreathing(_ active: Bool) {
+        // subtle breathing when silent
+        for bar in bars {
+            bar.removeAnimation(forKey: "breath")
+            if active {
+                let anim = CABasicAnimation(keyPath: "opacity")
+                anim.fromValue = bar.opacity
+                anim.toValue = max(0.14, bar.opacity * 0.6)
+                anim.duration = 1.1
+                anim.autoreverses = true
+                anim.repeatCount = .infinity
+                anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                bar.add(anim, forKey: "breath")
+            }
+        }
     }
 }
 
@@ -94,44 +132,77 @@ final class RecordingView: NSView {
     let retryButton = NSButton()
 
     private let effectView = NSVisualEffectView()
+    private let highlightLayer = CALayer()
     private let borderLayer = CALayer()
     private let waveform = WaveformView(frame: .zero)
     private let timeLabel = NSTextField(labelWithString: "0:00")
+    private let dotView = NSView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
+    private let processingLabel = NSTextField(labelWithString: "")
     private let cancelButton = NSButton()
     private let confirmButton = NSButton()
     private let spinner = NSProgressIndicator()
+    private let errorIcon = NSImageView(frame: .zero)
     private let errorLabel = NSTextField(labelWithString: "")
-    private let modeBadge = NSTextField(labelWithString: "")
+    private let modeBadge = NSView(frame: .zero)
+    private let modeBadgeLabel = NSTextField(labelWithString: "COMMAND")
+    private let modeBadgeIcon = NSImageView(frame: .zero)
 
     private var panelMode: RecordingPanelMode = .recording
     private var purpose: PanelPurpose = .dictation
+    private var dotPulse: CABasicAnimation?
+    private var isWarming = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = false
 
-        effectView.material = .hudWindow
+        // Unified visual effect — popover material is cleaner than hudWindow
+        effectView.material = VTDesign.Material.panel
         effectView.blendingMode = .withinWindow
         effectView.state = .active
         effectView.wantsLayer = true
-        effectView.layer?.cornerRadius = 17
+        effectView.layer?.cornerRadius = VTDesign.Radius.pill
         effectView.layer?.masksToBounds = true
         addSubview(effectView)
 
-        borderLayer.cornerRadius = 17
-        borderLayer.borderWidth = 0.5
-        borderLayer.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        // Top highlight for depth
+        highlightLayer.cornerRadius = VTDesign.Radius.pill
+        highlightLayer.borderWidth = 0
+        highlightLayer.backgroundColor = NSColor.clear.cgColor
+        highlightLayer.masksToBounds = true
+        layer?.addSublayer(highlightLayer)
+
+        borderLayer.cornerRadius = VTDesign.Radius.pill
+        borderLayer.borderWidth = 0.6
+        borderLayer.borderColor = VTDesign.Color.panelBorder.cgColor
         borderLayer.masksToBounds = true
         layer?.addSublayer(borderLayer)
 
         addSubview(waveform)
 
-        timeLabel.textColor = .white.withAlphaComponent(0.92)
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        // recording dot
+        dotView.wantsLayer = true
+        dotView.layer?.cornerRadius = 4
+        dotView.layer?.backgroundColor = NSColor.systemRed.cgColor
+        dotView.layer?.shadowColor = NSColor.systemRed.withAlphaComponent(0.55).cgColor
+        dotView.layer?.shadowRadius = 4
+        dotView.layer?.shadowOpacity = 0.9
+        dotView.layer?.shadowOffset = .zero
+        addSubview(dotView)
+
+        timeLabel.textColor = .white.withAlphaComponent(0.94)
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12.5, weight: .semibold)
         timeLabel.alignment = .center
         addSubview(timeLabel)
+
+        // processing central label
+        processingLabel.textColor = .white.withAlphaComponent(0.88)
+        processingLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        processingLabel.alignment = .center
+        processingLabel.isHidden = true
+        addSubview(processingLabel)
 
         statusLabel.textColor = .white.withAlphaComponent(0.92)
         statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
@@ -139,17 +210,31 @@ final class RecordingView: NSView {
         statusLabel.isHidden = true
         addSubview(statusLabel)
 
-        modeBadge.font = .systemFont(ofSize: 8.5, weight: .semibold)
-        modeBadge.alignment = .center
-        modeBadge.textColor = .white.withAlphaComponent(0.68)
+        // COMMAND badge — capsule with gradient
         modeBadge.wantsLayer = true
-        modeBadge.layer?.cornerRadius = 6
-        modeBadge.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        modeBadge.layer?.cornerRadius = VTDesign.Radius.badge
+        modeBadge.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.18).cgColor
+        modeBadge.layer?.borderWidth = 0.5
+        modeBadge.layer?.borderColor = NSColor.systemPurple.withAlphaComponent(0.22).cgColor
         modeBadge.isHidden = true
+        modeBadgeIcon.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+        modeBadgeIcon.contentTintColor = NSColor.systemPurple.withAlphaComponent(0.92)
+        modeBadge.addSubview(modeBadgeIcon)
+        modeBadgeLabel.font = .systemFont(ofSize: 8.5, weight: .bold)
+        modeBadgeLabel.textColor = NSColor.white.withAlphaComponent(0.86)
+        modeBadgeLabel.alignment = .center
+        modeBadge.addSubview(modeBadgeLabel)
         addSubview(modeBadge)
 
-        errorLabel.textColor = NSColor.systemRed.withAlphaComponent(0.96)
-        errorLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
+        errorIcon.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        errorIcon.contentTintColor = NSColor.systemRed.withAlphaComponent(0.95)
+        errorIcon.isHidden = true
+        addSubview(errorIcon)
+
+        errorLabel.textColor = NSColor.white.withAlphaComponent(0.96)
+        errorLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         errorLabel.alignment = .left
         errorLabel.maximumNumberOfLines = 1
         errorLabel.lineBreakMode = .byTruncatingTail
@@ -164,6 +249,7 @@ final class RecordingView: NSView {
         addSubview(spinner)
 
         setupButtons()
+        startDotPulse()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -171,23 +257,30 @@ final class RecordingView: NSView {
     private func setupButtons() {
         cancelButton.isBordered = false
         cancelButton.wantsLayer = true
-        cancelButton.layer?.cornerRadius = 15
-        cancelButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        cancelButton.layer?.cornerRadius = 16
+        cancelButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
         cancelButton.layer?.borderWidth = 0.5
-        cancelButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        cancelButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
         cancelButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Cancel")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+            .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
         cancelButton.contentTintColor = .white
         cancelButton.target = self
         cancelButton.action = #selector(didCancel)
+        // hover tracking
+        let cancelTracker = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: ["btn": "cancel"])
+        cancelButton.addTrackingArea(cancelTracker)
         addSubview(cancelButton)
 
         confirmButton.isBordered = false
         confirmButton.wantsLayer = true
-        confirmButton.layer?.cornerRadius = 15
+        confirmButton.layer?.cornerRadius = 16
         confirmButton.layer?.backgroundColor = NSColor.white.cgColor
+        confirmButton.layer?.shadowColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        confirmButton.layer?.shadowRadius = 6
+        confirmButton.layer?.shadowOpacity = 0.9
+        confirmButton.layer?.shadowOffset = CGSize(width: 0, height: 2)
         confirmButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Confirm")?
-            .withSymbolConfiguration(.init(pointSize: 11.5, weight: .bold))
+            .withSymbolConfiguration(.init(pointSize: 12.5, weight: .bold))
         confirmButton.contentTintColor = .black
         confirmButton.target = self
         confirmButton.action = #selector(didConfirm)
@@ -197,8 +290,12 @@ final class RecordingView: NSView {
         retryButton.wantsLayer = true
         retryButton.layer?.cornerRadius = 14
         retryButton.layer?.backgroundColor = NSColor.white.cgColor
+        retryButton.layer?.shadowColor = NSColor.black.withAlphaComponent(0.16).cgColor
+        retryButton.layer?.shadowRadius = 6
+        retryButton.layer?.shadowOpacity = 0.8
+        retryButton.layer?.shadowOffset = CGSize(width: 0, height: 2)
         retryButton.title = "Retry"
-        retryButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        retryButton.font = .systemFont(ofSize: 12, weight: .semibold)
         retryButton.contentTintColor = .black
         retryButton.target = self
         retryButton.action = #selector(didRetry)
@@ -206,9 +303,47 @@ final class RecordingView: NSView {
         addSubview(retryButton)
     }
 
+    private func startDotPulse() {
+        let pulse = CABasicAnimation(keyPath: "transform.scale")
+        pulse.fromValue = 1.0
+        pulse.toValue = 1.42
+        pulse.duration = 0.85
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        dotView.layer?.add(pulse, forKey: "pulseScale")
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1.0
+        fade.toValue = 0.55
+        fade.duration = 0.85
+        fade.autoreverses = true
+        fade.repeatCount = .infinity
+        dotView.layer?.add(fade, forKey: "pulseOpacity")
+    }
+
+    func setWarming(_ warming: Bool) {
+        isWarming = warming
+        if warming {
+            waveform.alphaValue = 0.38
+            timeLabel.textColor = .white.withAlphaComponent(0.42)
+            dotView.alphaValue = 0.45
+            timeLabel.stringValue = "…"
+        } else {
+            waveform.alphaValue = 1.0
+            timeLabel.textColor = .white.withAlphaComponent(0.94)
+            dotView.alphaValue = 1.0
+        }
+        needsLayout = true
+    }
+
+    func setConfirmEnabled(_ enabled: Bool) {
+        confirmButton.isEnabled = enabled
+        confirmButton.alphaValue = enabled ? 1.0 : 0.42
+        // also dim time while not ready? keep
+    }
+
     func setPurpose(_ purpose: PanelPurpose) {
         self.purpose = purpose
-        modeBadge.stringValue = "COMMAND"
         modeBadge.isHidden = purpose != .command
         needsLayout = true
     }
@@ -217,12 +352,15 @@ final class RecordingView: NSView {
         super.layout()
         let rect = bounds
         effectView.frame = rect
-        effectView.layer?.cornerRadius = 17
+        effectView.layer?.cornerRadius = VTDesign.Radius.pill
+        highlightLayer.frame = CGRect(x: 1, y: rect.height - 1.2, width: rect.width - 2, height: 1.2)
+        highlightLayer.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        highlightLayer.cornerRadius = VTDesign.Radius.pill
         borderLayer.frame = rect
-        borderLayer.cornerRadius = 17
+        borderLayer.cornerRadius = VTDesign.Radius.pill
 
-        let padding: CGFloat = 8
-        let buttonSize: CGFloat = 30
+        let padding: CGFloat = 9
+        let buttonSize: CGFloat = 32
         let centerY = (rect.height - buttonSize) / 2
         cancelButton.frame = CGRect(x: padding, y: centerY, width: buttonSize, height: buttonSize)
 
@@ -232,52 +370,74 @@ final class RecordingView: NSView {
             confirmButton.isHidden = false
             retryButton.isHidden = true
             errorLabel.isHidden = true
+            errorIcon.isHidden = true
             spinner.isHidden = true
             statusLabel.isHidden = true
+            processingLabel.isHidden = true
             waveform.isHidden = false
             timeLabel.isHidden = false
+            dotView.isHidden = false
             modeBadge.isHidden = purpose != .command
 
             confirmButton.frame = CGRect(x: rect.width - padding - buttonSize, y: centerY, width: buttonSize, height: buttonSize)
-            let timeWidth: CGFloat = 38
-            let timeX = confirmButton.frame.minX - timeWidth - 7
+            let timeWidth: CGFloat = 42
+            let timeX = confirmButton.frame.minX - timeWidth - 8
+            // dot + time as unit
+            dotView.frame = CGRect(x: timeX - 10, y: rect.height/2 - 4, width: 8, height: 8)
+            dotView.layer?.cornerRadius = 4
             timeLabel.frame = CGRect(x: timeX, y: (rect.height - 16) / 2, width: timeWidth, height: 16)
 
-            var left = cancelButton.frame.maxX + 10
+            var left = cancelButton.frame.maxX + 12
             if purpose == .command {
-                modeBadge.frame = CGRect(x: left, y: (rect.height - 15) / 2, width: 62, height: 15)
-                left = modeBadge.frame.maxX + 8
+                let badgeW: CGFloat = 92
+                modeBadge.frame = CGRect(x: left, y: (rect.height - 18) / 2, width: badgeW, height: 18)
+                modeBadge.layer?.cornerRadius = 9
+                modeBadgeIcon.frame = CGRect(x: 8, y: 3, width: 12, height: 12)
+                modeBadgeLabel.frame = CGRect(x: 22, y: 1, width: badgeW - 24, height: 16)
+                modeBadgeLabel.stringValue = "COMMAND"
+                left = modeBadge.frame.maxX + 10
             }
-            let right = timeX - 8
-            waveform.frame = CGRect(x: left, y: 8, width: max(0, right - left), height: rect.height - 16)
+            let right = (dotView.frame.minX) - 10
+            waveform.frame = CGRect(x: left, y: 10, width: max(0, right - left), height: rect.height - 20)
 
         case .processing:
             cancelButton.isHidden = true
             confirmButton.isHidden = true
             retryButton.isHidden = true
             errorLabel.isHidden = true
+            errorIcon.isHidden = true
             waveform.isHidden = true
             timeLabel.isHidden = true
+            dotView.isHidden = true
             modeBadge.isHidden = true
             statusLabel.isHidden = true
             spinner.isHidden = false
-            spinner.frame = CGRect(x: (rect.width - 16) / 2, y: (rect.height - 16) / 2, width: 16, height: 16)
+            processingLabel.isHidden = false
+            // center spinner + label
+            let totalW: CGFloat = 16 + 6 + processingLabel.intrinsicContentSize.width
+            let startX = (rect.width - totalW) / 2
+            spinner.frame = CGRect(x: startX, y: (rect.height - 16) / 2, width: 16, height: 16)
+            processingLabel.frame = CGRect(x: spinner.frame.maxX + 8, y: (rect.height - 16)/2, width: processingLabel.intrinsicContentSize.width, height: 16)
 
         case .error:
             cancelButton.isHidden = false
             confirmButton.isHidden = true
             waveform.isHidden = true
             timeLabel.isHidden = true
+            dotView.isHidden = true
             statusLabel.isHidden = true
             modeBadge.isHidden = true
             spinner.isHidden = true
+            processingLabel.isHidden = true
             errorLabel.isHidden = false
+            errorIcon.isHidden = false
             retryButton.isHidden = false
-            retryButton.frame = CGRect(x: rect.width - padding - 72, y: (rect.height - 28) / 2, width: 72, height: 28)
+            retryButton.frame = CGRect(x: rect.width - padding - 78, y: (rect.height - 30) / 2, width: 78, height: 30)
+            errorIcon.frame = CGRect(x: cancelButton.frame.maxX + 12, y: (rect.height - 14)/2, width: 14, height: 14)
             errorLabel.frame = CGRect(
-                x: cancelButton.frame.maxX + 11,
+                x: errorIcon.frame.maxX + 7,
                 y: (rect.height - 18) / 2,
-                width: max(0, retryButton.frame.minX - cancelButton.frame.maxX - 20),
+                width: max(0, retryButton.frame.minX - errorIcon.frame.maxX - 14),
                 height: 18
             )
         }
@@ -291,11 +451,11 @@ final class RecordingView: NSView {
 
     func setProcessingStatus(_ text: String) {
         panelMode = .processing
-        statusLabel.stringValue = ""
+        processingLabel.stringValue = text
+        statusLabel.stringValue = text
         cancelButton.isEnabled = false
         spinner.startAnimation(nil)
         needsLayout = true
-        layoutSubtreeIfNeeded()
     }
 
     func showError(_ message: String, retryTitle: String = "Retry") {
@@ -308,9 +468,30 @@ final class RecordingView: NSView {
         layoutSubtreeIfNeeded()
     }
 
+    func resetToRecording() {
+        panelMode = .recording
+        cancelButton.isEnabled = true
+        spinner.stopAnimation(nil)
+        needsLayout = true
+    }
+
     @objc private func didCancel() { onCancel?() }
     @objc private func didConfirm() { onConfirm?() }
     @objc private func didRetry() { onRetry?() }
+
+    override func mouseEntered(with event: NSEvent) {
+        if let btn = event.trackingArea?.userInfo?["btn"] as? String, btn == "cancel" {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                cancelButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+            }
+        }
+    }
+    override func mouseExited(with event: NSEvent) {
+        if let btn = event.trackingArea?.userInfo?["btn"] as? String, btn == "cancel" {
+            cancelButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        }
+    }
 }
 
 // MARK: - PanelController
@@ -326,6 +507,8 @@ final class PanelController: NSObject {
     private var lastAudioData: Data?
     private var lastCommandInstruction: String?
     private var retryOverride: (() -> Void)?
+    private var isEngineReady = false
+    private var pendingConfirm = false
 
     private(set) var purpose: PanelPurpose = .dictation
     var isVisible: Bool { panel != nil }
@@ -350,8 +533,6 @@ final class PanelController: NSObject {
         lastCommandInstruction = nil
         retryOverride = nil
 
-        // Do not put an Accessibility prompt in the hot path for users who have
-        // already granted access. On first run we still request it before recording.
         if !TextInjector.isAccessibilityTrusted {
             TextInjector.requestAccessibilityPermissionIfNeeded()
         }
@@ -375,11 +556,11 @@ final class PanelController: NSObject {
     private func makePanel() -> RecordingView? {
         guard panel == nil else { return recordingView }
         let screenFrame = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        let panelWidth: CGFloat = 420
-        let panelHeight: CGFloat = 54
+        let panelWidth: CGFloat = 480
+        let panelHeight: CGFloat = 64
         let frame = NSRect(
             x: screenFrame.midX - panelWidth / 2,
-            y: screenFrame.minY + 112,
+            y: screenFrame.minY + 118,
             width: panelWidth,
             height: panelHeight
         )
@@ -393,15 +574,17 @@ final class PanelController: NSObject {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.animationBehavior = .alertPanel
         panel.contentView?.wantsLayer = true
+        // Double shadow via contentView layer
         panel.contentView?.layer?.shadowColor = NSColor.black.cgColor
-        panel.contentView?.layer?.shadowOpacity = 0.22
-        panel.contentView?.layer?.shadowRadius = 14
-        panel.contentView?.layer?.shadowOffset = CGSize(width: 0, height: -5)
+        panel.contentView?.layer?.shadowOpacity = 0.26
+        panel.contentView?.layer?.shadowRadius = 24
+        panel.contentView?.layer?.shadowOffset = CGSize(width: 0, height: -10)
+        // inner second shadow via extra shadow path could be added, keep simple
 
         let view = RecordingView(frame: NSRect(origin: .zero, size: frame.size))
         view.autoresizingMask = [.width, .height]
@@ -414,10 +597,14 @@ final class PanelController: NSObject {
         self.panel = panel
         recordingView = view
         panel.alphaValue = 0
+        // subtle scale-in
+        panel.contentView?.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
         panel.orderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
+            context.duration = VTDesign.Animation.panelFade
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
+            panel.contentView?.layer?.transform = CATransform3DIdentity
         }
 
         return view
@@ -426,24 +613,35 @@ final class PanelController: NSObject {
     private func resizePanel(width: CGFloat, animated: Bool = true) {
         guard let panel else { return }
         let current = panel.frame
-        let frame = NSRect(
+        let newFrame = NSRect(
             x: current.midX - width / 2,
             y: current.minY,
             width: width,
             height: current.height
         )
-        panel.setFrame(frame, display: true, animate: animated)
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.24
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1.0)
+                panel.animator().setFrame(newFrame, display: true)
+            }
+        } else {
+            panel.setFrame(newFrame, display: true)
+        }
     }
 
     private func showProcessing(_ text: String) {
         onActivityChanged?(.processing)
         recordingView?.setProcessingStatus(text)
-        resizePanel(width: 64)
+        // measure text width for pill
+        let textW = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width
+        let targetW = min(420, max(200, 16 + 8 + textW + 32))
+        resizePanel(width: targetW)
     }
 
     private func showErrorMessage(_ message: String, retryTitle: String = "Retry") {
         onActivityChanged?(.error)
-        resizePanel(width: 420)
+        resizePanel(width: 480)
         recordingView?.showError(message, retryTitle: retryTitle)
     }
 
@@ -451,41 +649,75 @@ final class PanelController: NSObject {
         guard panel == nil else { return }
         isTranscribing = false
         lastAudioData = nil
+        isEngineReady = false
+        pendingConfirm = false
 
-        // Mic first, UI second. The audio engine starts before AX target capture and
-        // before the floating panel is built, so the first spoken word is not lost
-        // while VoiceType is doing UI work.
-        do {
-            try recorder.startRecording()
-        } catch {
-            presentErrorOnly("Could not start the microphone. Please try again.")
-            return
-        }
-        onActivityChanged?(.recording)
-        onRecordingControlsChanged?(true, !AppSettings.shared.holdToTalkEnabled)
-
+        // Capture the AX target before the panel steals focus — must be fast.
         let target = TextInjector.captureTarget()
         injectionTarget = target
 
         if purpose == .command {
             let selected = target.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !selected.isEmpty else {
-                onRecordingControlsChanged?(false, false)
-                recorder.cancelRecording()
                 presentErrorOnly("Select some text first, then press the Command shortcut.")
                 return
             }
         }
 
         guard let view = makePanel() else {
-            onRecordingControlsChanged?(false, false)
-            recorder.cancelRecording()
             return
         }
 
+        view.resetToRecording()
+        view.setWarming(true)
+        view.setConfirmEnabled(false)
+        onActivityChanged?(.recording)
+        onRecordingControlsChanged?(true, !AppSettings.shared.holdToTalkEnabled)
+
+        // Show panel immediately; waveform stays dimmed until the engine is actually
+        // capturing. This makes the hotkey feel instant even though CoreAudio
+        // needs ~300-900ms to bring the input node up.
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
             guard let self else { return }
-            view.update(amplitudes: self.recorder.waveformAmplitudes, time: self.recorder.formattedTime)
+            if self.isEngineReady {
+                view.update(amplitudes: self.recorder.waveformAmplitudes, time: self.recorder.formattedTime)
+            } else {
+                // Keep timer at 0:00 while warming so the user sees "ready" only when we are truly recording
+                view.update(amplitudes: Array(repeating: 0, count: 18), time: "0:00")
+            }
+        }
+
+        // Start the audio graph on the next run-loop turn. Because the panel is
+        // already on screen the 0.5-1.5s CoreAudio bring-up no longer feels like
+        // a frozen hotkey.
+        let startTime = CFAbsoluteTimeGetCurrent()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            // User may have hit Esc / Cmd+Q while we were warming.
+            guard self.panel != nil, self.recordingView != nil else { return }
+            do {
+                try self.recorder.startRecording()
+                self.isEngineReady = true
+                let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+                // Keep the warmup cue visible for at least 160ms so it doesn't flash.
+                let minWarmup: Double = 0.16
+                let delay = max(0, minWarmup - elapsed)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.panel != nil else { return }
+                    self.recordingView?.setWarming(false)
+                    self.recordingView?.setConfirmEnabled(true)
+                    if self.pendingConfirm {
+                        self.pendingConfirm = false
+                        self.confirm()
+                    }
+                }
+            } catch {
+                self.isEngineReady = false
+                self.displayTimer?.invalidate()
+                self.displayTimer = nil
+                self.onRecordingControlsChanged?(false, false)
+                self.presentErrorOnly("Could not start the microphone. Please try again.")
+            }
         }
     }
 
@@ -509,12 +741,23 @@ final class PanelController: NSObject {
 
     func confirm() {
         guard isVisible, !isTranscribing else { return }
+        // If the audio graph hasn't finished starting yet, queue the confirm.
+        // This makes hold-to-talk feel instant even if the user releases the
+        // key during the ~0.5s CoreAudio bring-up.
+        if !isEngineReady {
+            pendingConfirm = true
+            recordingView?.setWarming(true)
+            // Keep the orange indicator and timer visible until we actually stop
+            return
+        }
         let target = injectionTarget ?? TextInjector.captureTarget()
 
         displayTimer?.invalidate()
         displayTimer = nil
         onRecordingControlsChanged?(false, false)
         isTranscribing = true
+        isEngineReady = false
+        pendingConfirm = false
         showProcessing(purpose == .command ? "Transcribing command…" : "Transcribing…")
 
         recorder.stopRecording { [weak self] url in
@@ -586,7 +829,6 @@ final class PanelController: NSObject {
                 case .success(let processed):
                     self.finishAndInject(processed, target: target, kind: .dictation)
                 case .failure:
-                    // Smart processing is intentionally fail-open: dictation should never be lost because the optional LLM pass failed.
                     self.finishAndInject(transcript, target: target, kind: .dictation)
                 }
             }
@@ -657,6 +899,8 @@ final class PanelController: NSObject {
         displayTimer?.invalidate()
         displayTimer = nil
         onRecordingControlsChanged?(false, false)
+        isEngineReady = false
+        pendingConfirm = false
         recorder.cancelRecording()
         isTranscribing = false
         close()
@@ -669,14 +913,18 @@ final class PanelController: NSObject {
         displayTimer = nil
         onRecordingControlsChanged?(false, false)
         onActivityChanged?(.idle)
+        isEngineReady = false
+        pendingConfirm = false
 
         guard let panel else { return }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.13
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
+            panel.contentView?.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
         }, completionHandler: { panel.orderOut(nil) })
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
             self?.panel = nil
             self?.recordingView = nil
             self?.injectionTarget = nil

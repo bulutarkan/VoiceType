@@ -2,6 +2,10 @@ import AVFoundation
 
 final class AudioRecorder: NSObject {
     private static let waveformHistoryCount = 18
+    // Keep the engine warm for a few seconds after stopping so the next
+    // dictation is instant. A fully torn-down engine needs 0.5-1.2s to
+    // re-bring CoreAudio up — that's the 1-2s delay the user feels.
+    private static let keepAliveSeconds: TimeInterval = 7.0
 
     var waveformAmplitudes: [Float] = Array(repeating: 0, count: waveformHistoryCount)
     var recordingTime: TimeInterval = 0
@@ -11,21 +15,45 @@ final class AudioRecorder: NSObject {
     private var tempFileURL: URL?
     private var timer: Timer?
     private var tapInstalled = false
+    private var keepAliveWorkItem: DispatchWorkItem?
+    private var cachedFormat: AVAudioFormat?
 
     func startRecording() throws {
         guard audioFile == nil else { return }
 
-        // Important: create and own the input graph only while an actual recording
-        // is active. Keeping AVAudioEngine.inputNode prepared while VoiceType is idle
-        // can force Bluetooth headsets into their hands-free/mono audio profile.
-        tearDownEngine()
+        // Cancel any pending keep-alive teardown from the previous session.
+        keepAliveWorkItem?.cancel()
+        keepAliveWorkItem = nil
 
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        try SystemAudioInput.configure(input, deviceUID: AppSettings.shared.microphoneDeviceUID)
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw MicrophoneInputError.invalidFormat
+        let engine: AVAudioEngine
+        let format: AVAudioFormat
+        let shouldReuse = audioEngine != nil
+
+        if let existing = audioEngine, shouldReuse {
+            // Reuse the warm engine left over from the last recording (within 7s).
+            // This skips ~400-800ms of CoreAudio bring-up.
+            engine = existing
+            // Engine was stopped but not torn down — input node is still valid.
+            let input = engine.inputNode
+            // Re-apply device selection only if it changed (fast path skips CoreAudio query).
+            try SystemAudioInput.configure(input, deviceUID: AppSettings.shared.microphoneDeviceUID)
+            format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                throw MicrophoneInputError.invalidFormat
+            }
+        } else {
+            // Cold start — pay the CoreAudio bring-up cost once, then keep warm.
+            let newEngine = AVAudioEngine()
+            let input = newEngine.inputNode
+            try SystemAudioInput.configure(input, deviceUID: AppSettings.shared.microphoneDeviceUID)
+            let f = input.outputFormat(forBus: 0)
+            guard f.sampleRate > 0, f.channelCount > 0 else {
+                throw MicrophoneInputError.invalidFormat
+            }
+            engine = newEngine
+            format = f
+            audioEngine = engine
+            cachedFormat = format
         }
 
         let url = FileManager.default.temporaryDirectory
@@ -34,8 +62,10 @@ final class AudioRecorder: NSObject {
         waveformAmplitudes = Array(repeating: 0, count: Self.waveformHistoryCount)
         recordingTime = 0
 
-        audioEngine = engine
         audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        let input = engine.inputNode
+        // Ensure no stale tap before installing.
+        if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
         input.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             try? self.audioFile?.write(from: buffer)
@@ -61,7 +91,7 @@ final class AudioRecorder: NSObject {
             removeTapIfNeeded()
             audioFile = nil
             tempFileURL = nil
-            tearDownEngine()
+            scheduleKeepAliveTeardown(immediate: true)
             throw error
         }
 
@@ -91,9 +121,13 @@ final class AudioRecorder: NSObject {
         recordingTime = 0
         tempFileURL = nil
 
-        // Fully release the input node after every recording/cancel. A stopped but
-        // retained AVAudioEngine can still keep Bluetooth audio in hands-free mode.
-        tearDownEngine()
+        // Stop the graph immediately so the orange mic indicator disappears,
+        // but keep the AVAudioEngine instance warm for a few seconds so the
+        // next hotkey is instant. After the keep-alive window we fully tear
+        // down to restore the Bluetooth headset profile.
+        audioEngine?.stop()
+        audioEngine?.reset()
+        scheduleKeepAliveTeardown(immediate: false)
     }
 
     private func removeTapIfNeeded() {
@@ -102,11 +136,27 @@ final class AudioRecorder: NSObject {
         tapInstalled = false
     }
 
+    private func scheduleKeepAliveTeardown(immediate: Bool) {
+        keepAliveWorkItem?.cancel()
+        if immediate {
+            tearDownEngine()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.tearDownEngine()
+        }
+        keepAliveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.keepAliveSeconds, execute: work)
+    }
+
     private func tearDownEngine() {
+        keepAliveWorkItem?.cancel()
+        keepAliveWorkItem = nil
         removeTapIfNeeded()
         audioEngine?.stop()
         audioEngine?.reset()
         audioEngine = nil
+        cachedFormat = nil
     }
 
     var formattedTime: String {

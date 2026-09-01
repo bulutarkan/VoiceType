@@ -261,27 +261,61 @@ final class MicrophoneLevelView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        let segmentCount = 20
-        let gap: CGFloat = 2.5
+        // Premium larger meter — 28 segments, more granularity
+        let segmentCount = 28
+        let gap: CGFloat = 2.2
         let segmentWidth = max(2, (bounds.width - gap * CGFloat(segmentCount - 1)) / CGFloat(segmentCount))
         let activeSegments = Int(round(level * Float(segmentCount)))
+        let h = max(4, bounds.height - 2)
+
+        // subtle track background
+        let trackPath = NSBezierPath(roundedRect: NSRect(x: 0, y: 1, width: bounds.width, height: h), xRadius: 4, yRadius: 4)
+        NSColor.black.withAlphaComponent(0.06).setFill()
+        trackPath.fill()
 
         for index in 0..<segmentCount {
             let x = CGFloat(index) * (segmentWidth + gap)
-            let rect = NSRect(x: x, y: 1, width: segmentWidth, height: max(2, bounds.height - 2))
-            let path = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+            let rect = NSRect(x: x, y: 1, width: segmentWidth, height: h)
+            let path = NSBezierPath(roundedRect: rect, xRadius: 2.4, yRadius: 2.4)
 
             let baseColor: NSColor
-            if index < 13 {
+            let threshold: Int
+            if index < 18 {
                 baseColor = .systemGreen
-            } else if index < 17 {
+                threshold = index
+            } else if index < 24 {
                 baseColor = .systemOrange
+                threshold = index
             } else {
                 baseColor = .systemRed
+                threshold = index
             }
 
-            baseColor.withAlphaComponent(index < activeSegments ? 0.95 : 0.14).setFill()
+            let isActive = threshold < activeSegments
+            // active: solid with slight glow, inactive: very subtle
+            if isActive {
+                // glow for active segments
+                let shadow = NSShadow()
+                shadow.shadowColor = baseColor.withAlphaComponent(0.35)
+                shadow.shadowBlurRadius = 4
+                shadow.shadowOffset = .zero
+                shadow.set()
+            }
+            baseColor.withAlphaComponent(isActive ? 0.98 : 0.10).setFill()
             path.fill()
+
+            // highlight line at top for active
+            if isActive {
+                let hi = NSRect(x: x, y: 1, width: segmentWidth, height: 1.5)
+                NSColor.white.withAlphaComponent(0.22).setFill()
+                NSBezierPath(roundedRect: hi, xRadius: 1, yRadius: 1).fill()
+            }
         }
+
+        // outer border subtle
+        let border = NSBezierPath(roundedRect: NSRect(x: 0.5, y: 0.5, width: bounds.width - 1, height: h + 1), xRadius: 4, yRadius: 4)
+        NSColor.separatorColor.withAlphaComponent(0.28).setStroke()
+        border.lineWidth = 0.5
+        border.stroke()
     }
 }
