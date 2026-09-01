@@ -11,27 +11,20 @@ final class AudioRecorder: NSObject {
     private var tempFileURL: URL?
     private var timer: Timer?
     private var tapInstalled = false
-    private var preparedDeviceUID: String?
-    private var preparedFormat: AVAudioFormat?
-
-    override init() {
-        super.init()
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
-            prewarm()
-        }
-    }
-
-    /// Prepares the audio graph without starting the microphone. This removes most
-    /// of the one-time AVAudioEngine setup cost from the hotkey press path.
-    func prewarm() {
-        try? prepareEngineIfNeeded()
-    }
 
     func startRecording() throws {
         guard audioFile == nil else { return }
-        try prepareEngineIfNeeded()
 
-        guard let engine = audioEngine, let format = preparedFormat else {
+        // Important: create and own the input graph only while an actual recording
+        // is active. Keeping AVAudioEngine.inputNode prepared while VoiceType is idle
+        // can force Bluetooth headsets into their hands-free/mono audio profile.
+        tearDownEngine()
+
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        try SystemAudioInput.configure(input, deviceUID: AppSettings.shared.microphoneDeviceUID)
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
             throw MicrophoneInputError.invalidFormat
         }
 
@@ -41,8 +34,8 @@ final class AudioRecorder: NSObject {
         waveformAmplitudes = Array(repeating: 0, count: Self.waveformHistoryCount)
         recordingTime = 0
 
+        audioEngine = engine
         audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
-        let input = engine.inputNode
         input.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             try? self.audioFile?.write(from: buffer)
@@ -68,6 +61,7 @@ final class AudioRecorder: NSObject {
             removeTapIfNeeded()
             audioFile = nil
             tempFileURL = nil
+            tearDownEngine()
             throw error
         }
 
@@ -88,39 +82,18 @@ final class AudioRecorder: NSObject {
         if let url { try? FileManager.default.removeItem(at: url) }
     }
 
-    private func prepareEngineIfNeeded() throws {
-        let requestedUID = AppSettings.shared.microphoneDeviceUID
-        if audioEngine != nil,
-           preparedFormat != nil,
-           preparedDeviceUID == requestedUID {
-            return
-        }
-
-        tearDownEngine()
-
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        try SystemAudioInput.configure(input, deviceUID: requestedUID)
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw MicrophoneInputError.invalidFormat
-        }
-
-        engine.prepare()
-        audioEngine = engine
-        preparedFormat = format
-        preparedDeviceUID = requestedUID
-    }
-
     private func cleanupRecordingState() {
         timer?.invalidate()
         timer = nil
         removeTapIfNeeded()
-        audioEngine?.stop()
         audioFile = nil
         waveformAmplitudes = Array(repeating: 0, count: Self.waveformHistoryCount)
         recordingTime = 0
         tempFileURL = nil
+
+        // Fully release the input node after every recording/cancel. A stopped but
+        // retained AVAudioEngine can still keep Bluetooth audio in hands-free mode.
+        tearDownEngine()
     }
 
     private func removeTapIfNeeded() {
@@ -132,9 +105,8 @@ final class AudioRecorder: NSObject {
     private func tearDownEngine() {
         removeTapIfNeeded()
         audioEngine?.stop()
+        audioEngine?.reset()
         audioEngine = nil
-        preparedFormat = nil
-        preparedDeviceUID = nil
     }
 
     var formattedTime: String {
