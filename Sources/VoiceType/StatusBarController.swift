@@ -16,7 +16,7 @@ final class StatusBarController {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "VoiceType")
+            button.image = statusImage(named: "waveform", accessibilityDescription: "VoiceType")
         }
 
         menu.addItem(withTitle: "VoiceType", action: nil, keyEquivalent: "").isEnabled = false
@@ -50,6 +50,43 @@ final class StatusBarController {
         commandShortcutItem.title = "Command: \(AppSettings.shared.commandHotkeyDisplayString)"
         statusItem.button?.toolTip = "VoiceType — Dictate \(AppSettings.shared.hotkeyDisplayString) • Command \(AppSettings.shared.commandHotkeyDisplayString)"
         rebuildHistory()
+    }
+
+    func setActivity(_ activity: PanelActivity) {
+        guard let button = statusItem.button else { return }
+
+        let symbol: String
+        let description: String
+        let tooltip: String
+        switch activity {
+        case .idle:
+            symbol = "waveform"
+            description = "VoiceType"
+            tooltip = "VoiceType — Dictate \(AppSettings.shared.hotkeyDisplayString) • Command \(AppSettings.shared.commandHotkeyDisplayString)"
+        case .recording:
+            symbol = "waveform.circle.fill"
+            description = "VoiceType is recording"
+            tooltip = "VoiceType — Recording"
+        case .processing:
+            symbol = "ellipsis.circle"
+            description = "VoiceType is processing"
+            tooltip = "VoiceType — Transcribing"
+        case .error:
+            symbol = "exclamationmark.triangle"
+            description = "VoiceType needs attention"
+            tooltip = "VoiceType — Retry available"
+        }
+
+        button.image = statusImage(named: symbol, accessibilityDescription: description)
+        button.toolTip = tooltip
+    }
+
+    private func statusImage(named symbol: String, accessibilityDescription: String) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: accessibilityDescription)?
+            .withSymbolConfiguration(configuration)
+        image?.isTemplate = true
+        return image
     }
 
     @objc private func rebuildHistory() {

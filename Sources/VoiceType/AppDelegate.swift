@@ -72,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.onRecordingControlsChanged = { [weak self] active, enterEnabled in
             self?.hotkeyManager.setRecordingControlsActive(active, enterEnabled: enterEnabled)
         }
+        panelController.onActivityChanged = { [weak self] activity in
+            self?.statusBarController.setActivity(activity)
+        }
 
         // Useful for local verification and scripted smoke tests without changing normal menu-bar behavior.
         if CommandLine.arguments.contains("--settings") {

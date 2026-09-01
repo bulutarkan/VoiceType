@@ -78,7 +78,12 @@ enum SystemAudioInput {
     }
 
     static func device(uid: String) -> SystemAudioInputDevice? {
-        devices().first { $0.uid == uid }
+        guard let deviceID = deviceID(forUID: uid),
+              inputChannelCount(for: deviceID) > 0,
+              let name = stringProperty(kAudioObjectPropertyName, deviceID: deviceID) else {
+            return nil
+        }
+        return SystemAudioInputDevice(id: deviceID, uid: uid, name: name)
     }
 
     static func configure(_ inputNode: AVAudioInputNode, deviceUID: String?) throws {
@@ -86,14 +91,14 @@ enum SystemAudioInput {
             // Auto mode intentionally leaves AVAudioEngine on the current macOS default input.
             return
         }
-        guard let selected = device(uid: deviceUID) else {
+        guard let resolvedDeviceID = deviceID(forUID: deviceUID) else {
             throw MicrophoneInputError.deviceUnavailable
         }
         guard let audioUnit = inputNode.audioUnit else {
             throw MicrophoneInputError.deviceUnavailable
         }
 
-        var deviceID = selected.id
+        var deviceID = resolvedDeviceID
         let status = AudioUnitSetProperty(
             audioUnit,
             kAudioOutputUnitProperty_CurrentDevice,
@@ -105,6 +110,30 @@ enum SystemAudioInput {
         guard status == noErr else {
             throw MicrophoneInputError.configurationFailed(status)
         }
+    }
+
+    private static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uidValue: CFString = uid as CFString
+        let qualifierSize = UInt32(MemoryLayout<CFString>.size)
+        var deviceID = AudioDeviceID(0)
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+
+        let status = withUnsafePointer(to: &uidValue) { uidPointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                qualifierSize,
+                uidPointer,
+                &dataSize,
+                &deviceID
+            )
+        }
+        return status == noErr && deviceID != 0 ? deviceID : nil
     }
 
     private static func inputChannelCount(for deviceID: AudioDeviceID) -> UInt32 {

@@ -9,6 +9,13 @@ enum PanelPurpose {
     case command
 }
 
+enum PanelActivity {
+    case idle
+    case recording
+    case processing
+    case error
+}
+
 private enum RecordingPanelMode {
     case recording
     case processing
@@ -18,8 +25,8 @@ private enum RecordingPanelMode {
 // MARK: - Waveform
 
 final class WaveformView: NSView {
+    private let halfCount = 18
     private var bars: [CALayer] = []
-    private let count = 44
     private let barWidth: CGFloat = 2.2
     private let gap: CGFloat = 1.55
 
@@ -27,9 +34,10 @@ final class WaveformView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        for _ in 0..<count {
+
+        for _ in 0..<(halfCount * 2) {
             let bar = CALayer()
-            bar.backgroundColor = NSColor.white.withAlphaComponent(0.28).cgColor
+            bar.backgroundColor = NSColor.white.withAlphaComponent(0.22).cgColor
             bar.cornerRadius = barWidth / 2
             bar.masksToBounds = true
             layer?.addSublayer(bar)
@@ -40,26 +48,38 @@ final class WaveformView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func update(_ amplitudes: [Float]) {
-        let totalWidth = CGFloat(count) * (barWidth + gap) - gap
+        // The newest sample lives at the center and older samples fan out toward
+        // both edges. Nothing scrolls in from an off-screen history buffer.
+        let recent = Array(amplitudes.suffix(halfCount))
+        let totalWidth = CGFloat(bars.count) * (barWidth + gap) - gap
         let startX = (bounds.width - totalWidth) / 2
         let centerY = bounds.height / 2
 
         CATransaction.begin()
         CATransaction.setDisableActions(false)
-        CATransaction.setAnimationDuration(0.08)
+        CATransaction.setAnimationDuration(0.055)
+
         for (index, bar) in bars.enumerated() {
-            let amplitude = CGFloat(index < amplitudes.count ? amplitudes[index] : 0)
-            let height = max(2.5, pow(amplitude, 0.85) * bounds.height * 0.86)
+            let distanceFromCenter = index < halfCount
+                ? halfCount - 1 - index
+                : index - halfCount
+            let sourceIndex = recent.count - 1 - distanceFromCenter
+            let rawAmplitude = sourceIndex >= 0 ? recent[sourceIndex] : 0
+            let amplitude = CGFloat(rawAmplitude)
+            let height = max(2.2, pow(amplitude, 0.82) * bounds.height * 0.82)
+
             bar.frame = CGRect(
                 x: startX + CGFloat(index) * (barWidth + gap),
                 y: centerY - height / 2,
                 width: barWidth,
                 height: height
             )
-            let alpha: CGFloat = amplitude > 0.55 ? 1.0 : amplitude > 0.22 ? 0.72 : amplitude > 0.05 ? 0.42 : 0.22
+
+            let alpha: CGFloat = amplitude > 0.55 ? 1.0 : amplitude > 0.22 ? 0.72 : amplitude > 0.05 ? 0.42 : 0.20
             bar.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
             bar.opacity = Float(alpha)
         }
+
         CATransaction.commit()
     }
 }
@@ -208,6 +228,7 @@ final class RecordingView: NSView {
 
         switch panelMode {
         case .recording:
+            cancelButton.isHidden = false
             confirmButton.isHidden = false
             retryButton.isHidden = true
             errorLabel.isHidden = true
@@ -231,18 +252,19 @@ final class RecordingView: NSView {
             waveform.frame = CGRect(x: left, y: 8, width: max(0, right - left), height: rect.height - 16)
 
         case .processing:
+            cancelButton.isHidden = true
             confirmButton.isHidden = true
             retryButton.isHidden = true
             errorLabel.isHidden = true
             waveform.isHidden = true
             timeLabel.isHidden = true
             modeBadge.isHidden = true
-            statusLabel.isHidden = false
+            statusLabel.isHidden = true
             spinner.isHidden = false
-            spinner.frame = CGRect(x: cancelButton.frame.maxX + 16, y: (rect.height - 14) / 2, width: 14, height: 14)
-            statusLabel.frame = CGRect(x: spinner.frame.maxX + 8, y: (rect.height - 17) / 2, width: rect.width - spinner.frame.maxX - 24, height: 17)
+            spinner.frame = CGRect(x: (rect.width - 16) / 2, y: (rect.height - 16) / 2, width: 16, height: 16)
 
         case .error:
+            cancelButton.isHidden = false
             confirmButton.isHidden = true
             waveform.isHidden = true
             timeLabel.isHidden = true
@@ -269,7 +291,7 @@ final class RecordingView: NSView {
 
     func setProcessingStatus(_ text: String) {
         panelMode = .processing
-        statusLabel.stringValue = text
+        statusLabel.stringValue = ""
         cancelButton.isEnabled = false
         spinner.startAnimation(nil)
         needsLayout = true
@@ -300,6 +322,7 @@ final class PanelController: NSObject {
     private var displayTimer: Timer?
     private var injectionTarget: InjectionTarget?
     var onRecordingControlsChanged: ((Bool, Bool) -> Void)?
+    var onActivityChanged: ((PanelActivity) -> Void)?
     private var lastAudioData: Data?
     private var lastCommandInstruction: String?
     private var retryOverride: (() -> Void)?
@@ -323,29 +346,24 @@ final class PanelController: NSObject {
     }
 
     private func show(_ requestedPurpose: PanelPurpose) {
-        TextInjector.requestAccessibilityPermissionIfNeeded()
-        let target = TextInjector.captureTarget()
-        injectionTarget = target
         purpose = requestedPurpose
         lastCommandInstruction = nil
         retryOverride = nil
 
-        if requestedPurpose == .command {
-            let selected = target.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !selected.isEmpty else {
-                presentErrorOnly("Select some text first, then press the Command shortcut.")
-                return
-            }
+        // Do not put an Accessibility prompt in the hot path for users who have
+        // already granted access. On first run we still request it before recording.
+        if !TextInjector.isAccessibilityTrusted {
+            TextInjector.requestAccessibilityPermissionIfNeeded()
         }
 
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            presentRecordingPanel()
+            startRecordingAndPresent()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if granted { self.presentRecordingPanel() }
+                    if granted { self.startRecordingAndPresent() }
                     else { self.presentMicrophoneError() }
                 }
             }
@@ -386,6 +404,7 @@ final class PanelController: NSObject {
         panel.contentView?.layer?.shadowOffset = CGSize(width: 0, height: -5)
 
         let view = RecordingView(frame: NSRect(origin: .zero, size: frame.size))
+        view.autoresizingMask = [.width, .height]
         view.setPurpose(purpose)
         view.onCancel = { [weak self] in self?.cancel() }
         view.onConfirm = { [weak self] in self?.confirm() }
@@ -404,36 +423,88 @@ final class PanelController: NSObject {
         return view
     }
 
-    private func presentRecordingPanel() {
-        guard let view = makePanel() else { return }
+    private func resizePanel(width: CGFloat, animated: Bool = true) {
+        guard let panel else { return }
+        let current = panel.frame
+        let frame = NSRect(
+            x: current.midX - width / 2,
+            y: current.minY,
+            width: width,
+            height: current.height
+        )
+        panel.setFrame(frame, display: true, animate: animated)
+    }
+
+    private func showProcessing(_ text: String) {
+        onActivityChanged?(.processing)
+        recordingView?.setProcessingStatus(text)
+        resizePanel(width: 64)
+    }
+
+    private func showErrorMessage(_ message: String, retryTitle: String = "Retry") {
+        onActivityChanged?(.error)
+        resizePanel(width: 420)
+        recordingView?.showError(message, retryTitle: retryTitle)
+    }
+
+    private func startRecordingAndPresent() {
+        guard panel == nil else { return }
         isTranscribing = false
         lastAudioData = nil
 
-        recorder.startRecording()
+        // Mic first, UI second. The audio engine starts before AX target capture and
+        // before the floating panel is built, so the first spoken word is not lost
+        // while VoiceType is doing UI work.
+        do {
+            try recorder.startRecording()
+        } catch {
+            presentErrorOnly("Could not start the microphone. Please try again.")
+            return
+        }
+        onActivityChanged?(.recording)
         onRecordingControlsChanged?(true, !AppSettings.shared.holdToTalkEnabled)
 
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        let target = TextInjector.captureTarget()
+        injectionTarget = target
+
+        if purpose == .command {
+            let selected = target.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !selected.isEmpty else {
+                onRecordingControlsChanged?(false, false)
+                recorder.cancelRecording()
+                presentErrorOnly("Select some text first, then press the Command shortcut.")
+                return
+            }
+        }
+
+        guard let view = makePanel() else {
+            onRecordingControlsChanged?(false, false)
+            recorder.cancelRecording()
+            return
+        }
+
+        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
             guard let self else { return }
             view.update(amplitudes: self.recorder.waveformAmplitudes, time: self.recorder.formattedTime)
         }
     }
 
     private func presentErrorOnly(_ message: String) {
-        guard let view = makePanel() else { return }
+        guard makePanel() != nil else { return }
         isTranscribing = false
         retryOverride = { [weak self] in self?.close() }
-        view.showError(message, retryTitle: "Dismiss")
+        showErrorMessage(message, retryTitle: "Dismiss")
     }
 
     private func presentMicrophoneError() {
-        guard let view = makePanel() else { return }
+        guard makePanel() != nil else { return }
         retryOverride = { [weak self] in
             self?.close()
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
                 NSWorkspace.shared.open(url)
             }
         }
-        view.showError("Microphone access is required to record.", retryTitle: "Settings")
+        showErrorMessage("Microphone access is required to record.", retryTitle: "Settings")
     }
 
     func confirm() {
@@ -444,13 +515,13 @@ final class PanelController: NSObject {
         displayTimer = nil
         onRecordingControlsChanged?(false, false)
         isTranscribing = true
-        recordingView?.setProcessingStatus(purpose == .command ? "Transcribing command…" : "Transcribing…")
+        showProcessing(purpose == .command ? "Transcribing command…" : "Transcribing…")
 
         recorder.stopRecording { [weak self] url in
             guard let self else { return }
             guard let url else {
                 self.isTranscribing = false
-                self.recordingView?.showError("Recording failed. Please try again.")
+                self.showErrorMessage("Recording failed. Please try again.")
                 return
             }
             self.lastAudioData = try? Data(contentsOf: url)
@@ -482,7 +553,7 @@ final class PanelController: NSObject {
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else {
                         self.isTranscribing = false
-                        self.recordingView?.showError("Got an empty transcription. Try speaking a little longer.")
+                        self.showErrorMessage("Got an empty transcription. Try speaking a little longer.")
                         return
                     }
                     if self.purpose == .command {
@@ -494,7 +565,7 @@ final class PanelController: NSObject {
                 case .failure(let error):
                     self.isTranscribing = false
                     let message = error.localizedDescription
-                    self.recordingView?.showError(message.count > 120 ? String(message.prefix(120)) + "…" : message)
+                    self.showErrorMessage(message.count > 120 ? String(message.prefix(120)) + "…" : message)
                 }
             }
         }
@@ -507,7 +578,7 @@ final class PanelController: NSObject {
         }
 
         let mode = AppSettings.shared.smartProcessingMode
-        recordingView?.setProcessingStatus("\(mode.rawValue) processing…")
+        showProcessing("\(mode.rawValue) processing…")
         GroqLLMService.shared.processTranscript(transcript, mode: mode) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -525,12 +596,12 @@ final class PanelController: NSObject {
     private func applyCommand(instruction: String, target: InjectionTarget) {
         guard let selectedText = target.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !selectedText.isEmpty else {
             isTranscribing = false
-            recordingView?.showError("The selected text is no longer available. Select it again and retry.")
+            showErrorMessage("The selected text is no longer available. Select it again and retry.")
             return
         }
 
         lastCommandInstruction = instruction
-        recordingView?.setProcessingStatus("Applying command…")
+        showProcessing("Applying command…")
         GroqLLMService.shared.applyCommand(to: selectedText, instruction: instruction) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -543,10 +614,10 @@ final class PanelController: NSObject {
                     self.retryOverride = { [weak self] in
                         guard let self, let instruction = self.lastCommandInstruction else { return }
                         self.isTranscribing = true
-                        self.recordingView?.setProcessingStatus("Applying command…")
+                        self.showProcessing("Applying command…")
                         self.applyCommand(instruction: instruction, target: target)
                     }
-                    self.recordingView?.showError(message.count > 120 ? String(message.prefix(120)) + "…" : message)
+                    self.showErrorMessage(message.count > 120 ? String(message.prefix(120)) + "…" : message)
                 }
             }
         }
@@ -564,7 +635,7 @@ final class PanelController: NSObject {
             return
         }
         guard let data = lastAudioData, !data.isEmpty else {
-            recordingView?.showError("No audio is available to retry. Record again.")
+            showErrorMessage("No audio is available to retry. Record again.")
             return
         }
 
@@ -572,12 +643,12 @@ final class PanelController: NSObject {
         do {
             try data.write(to: url)
         } catch {
-            recordingView?.showError("Could not prepare the retry audio.")
+            showErrorMessage("Could not prepare the retry audio.")
             return
         }
 
         isTranscribing = true
-        recordingView?.setProcessingStatus(purpose == .command ? "Transcribing command…" : "Transcribing…")
+        showProcessing(purpose == .command ? "Transcribing command…" : "Transcribing…")
         let target = injectionTarget ?? TextInjector.captureTarget()
         transcribe(url: url, target: target)
     }
@@ -597,6 +668,7 @@ final class PanelController: NSObject {
         displayTimer?.invalidate()
         displayTimer = nil
         onRecordingControlsChanged?(false, false)
+        onActivityChanged?(.idle)
 
         guard let panel else { return }
         NSAnimationContext.runAnimationGroup({ context in
