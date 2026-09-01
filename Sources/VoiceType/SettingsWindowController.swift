@@ -5,16 +5,15 @@ final class SettingsWindowController: NSWindowController {
     var onShortcutChanged: (() -> Void)?
     var onAPIKeyChanged: (() -> Void)?
 
-    private let shortcutButton = NSButton(title: "", target: nil, action: nil)
-    private let apiKeyField = NSSecureTextField()
-    private let apiVisibleField = NSTextField()
-    private let toggleVisibilityButton = NSButton()
-    private let saveAPIKeyButton = NSButton(title: "Save", target: nil, action: nil)
-    private let statusLabel = NSTextField(labelWithString: "")
-    private let hintLabel = NSTextField(labelWithString: "")
+    private enum ShortcutCapture {
+        case dictation
+        case command
+    }
+
+    private let dictationShortcutButton = NSButton(title: "", target: nil, action: nil)
+    private let commandShortcutButton = NSButton(title: "", target: nil, action: nil)
+    private let shortcutStatusLabel = NSTextField(labelWithString: "")
     private let holdSwitch = NSSwitch()
-    private let holdTitleLabel = NSTextField(labelWithString: "Hold to talk")
-    private let holdDescLabel = NSTextField(labelWithString: "Release the shortcut to transcribe and paste.")
 
     private let microphonePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let microphoneRefreshButton = NSButton()
@@ -22,18 +21,29 @@ final class SettingsWindowController: NSWindowController {
     private let microphoneStatusLabel = NSTextField(labelWithString: "Speak to test")
     private let microphoneLevelMonitor = MicrophoneLevelMonitor()
 
+    private let smartProcessingSwitch = NSSwitch()
+    private let smartModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let smartModeDescription = NSTextField(labelWithString: "")
+    private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    private let apiKeyField = NSSecureTextField()
+    private let apiVisibleField = NSTextField()
+    private let toggleVisibilityButton = NSButton()
+    private let saveAPIKeyButton = NSButton(title: "Save", target: nil, action: nil)
+    private let apiStatusLabel = NSTextField(labelWithString: "")
+
     private var keyMonitor: Any?
-    private var isRecordingShortcut = false
+    private var activeShortcutCapture: ShortcutCapture?
     private var isAPIKeyVisible = false
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "VoiceType"
+        window.title = "VoiceType Settings"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
@@ -49,21 +59,14 @@ final class SettingsWindowController: NSWindowController {
         }
 
         setupView()
-        refreshShortcut()
-        refreshHoldToggle()
-        refreshMicrophoneDevices()
+        refreshAllControls()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func show() {
-        refreshShortcut()
-        refreshHoldToggle()
-        refreshMicrophoneDevices()
-        apiKeyField.stringValue = AppSettings.shared.groqAPIKey
-        apiVisibleField.stringValue = AppSettings.shared.groqAPIKey
+        refreshAllControls()
         startMicrophonePreview()
-
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
@@ -77,308 +80,254 @@ final class SettingsWindowController: NSWindowController {
         NSApp.setActivationPolicy(.accessory)
     }
 
-    // MARK: - View
+    // MARK: - Layout
 
     private func setupView() {
-        guard let contentView = window?.contentView else { return }
+        guard let content = window?.contentView else { return }
 
-        let effect = NSVisualEffectView(frame: contentView.bounds)
+        let effect = NSVisualEffectView(frame: content.bounds)
         effect.autoresizingMask = [.width, .height]
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
-        contentView.addSubview(effect)
+        content.addSubview(effect)
 
-        let headerH: CGFloat = 104
-        let header = NSView(frame: NSRect(
-            x: 0,
-            y: contentView.bounds.height - headerH,
-            width: contentView.bounds.width,
-            height: headerH
-        ))
-        header.autoresizingMask = [.width, .minYMargin]
-        effect.addSubview(header)
+        setupHeader(in: effect)
 
-        let iconView = NSImageView(frame: NSRect(x: 32, y: 18, width: 58, height: 58))
+        let tabs = NSTabView(frame: NSRect(x: 24, y: 24, width: 632, height: 486))
+        tabs.tabViewType = .topTabsBezelBorder
+        tabs.autoresizingMask = [.width, .height]
+
+        let general = NSTabViewItem(identifier: "general")
+        general.label = "General"
+        general.view = makeGeneralTab(frame: tabs.contentRect)
+        tabs.addTabViewItem(general)
+
+        let intelligence = NSTabViewItem(identifier: "intelligence")
+        intelligence.label = "Intelligence"
+        intelligence.view = makeIntelligenceTab(frame: tabs.contentRect)
+        tabs.addTabViewItem(intelligence)
+
+        let account = NSTabViewItem(identifier: "account")
+        account.label = "Groq & API"
+        account.view = makeAPITab(frame: tabs.contentRect)
+        tabs.addTabViewItem(account)
+
+        effect.addSubview(tabs)
+    }
+
+    private func setupHeader(in parent: NSView) {
+        let icon = NSImageView(frame: NSRect(x: 28, y: 528, width: 58, height: 58))
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            iconView.image = icon
-        } else if let bundled = NSImage(named: "AppIcon") {
-            iconView.image = bundled
+           let image = NSImage(contentsOf: iconURL) {
+            icon.image = image
         } else {
-            iconView.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: nil)
-            iconView.contentTintColor = .white
+            icon.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: nil)
         }
-        iconView.imageScaling = .scaleProportionallyDown
-        iconView.wantsLayer = true
-        iconView.layer?.cornerRadius = 13
-        iconView.layer?.masksToBounds = true
-        header.addSubview(iconView)
+        icon.imageScaling = .scaleProportionallyDown
+        parent.addSubview(icon)
 
         let title = NSTextField(labelWithString: "VoiceType")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
-        title.textColor = .labelColor
-        title.frame = NSRect(x: 108, y: 50, width: 220, height: 28)
-        header.addSubview(title)
+        title.font = .systemFont(ofSize: 23, weight: .semibold)
+        title.frame = NSRect(x: 104, y: 554, width: 250, height: 28)
+        parent.addSubview(title)
 
-        let subtitle = NSTextField(labelWithString: "Global voice-to-text  •  macOS 14+")
-        subtitle.font = .systemFont(ofSize: 12, weight: .regular)
+        let subtitle = NSTextField(labelWithString: "Fast dictation, smart editing, anywhere on macOS")
+        subtitle.font = .systemFont(ofSize: 11.5, weight: .regular)
         subtitle.textColor = .secondaryLabelColor
-        subtitle.frame = NSRect(x: 108, y: 29, width: 300, height: 17)
-        header.addSubview(subtitle)
+        subtitle.frame = NSRect(x: 105, y: 533, width: 360, height: 18)
+        parent.addSubview(subtitle)
 
-        let version = NSTextField(labelWithString: "v1.0  •  Groq Whisper")
+        let version = NSTextField(labelWithString: "v1.1 • Groq Whisper")
         version.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
         version.textColor = .tertiaryLabelColor
         version.alignment = .right
-        version.frame = NSRect(x: contentView.bounds.width - 190, y: 39, width: 158, height: 16)
-        version.autoresizingMask = [.minXMargin]
-        header.addSubview(version)
-
-        let headerDivider = NSBox(frame: NSRect(
-            x: 32,
-            y: contentView.bounds.height - headerH,
-            width: contentView.bounds.width - 64,
-            height: 1
-        ))
-        headerDivider.boxType = .separator
-        headerDivider.autoresizingMask = [.width, .minYMargin]
-        effect.addSubview(headerDivider)
-
-        let cardW: CGFloat = 536
-        let cardX: CGFloat = 32
-
-        setupShortcutCard(in: effect, frame: NSRect(x: cardX, y: 388, width: cardW, height: 176))
-        setupMicrophoneCard(in: effect, frame: NSRect(x: cardX, y: 234, width: cardW, height: 142))
-        setupAPICard(in: effect, frame: NSRect(x: cardX, y: 62, width: cardW, height: 160))
-
-        let footer = NSTextField(labelWithString: "Audio is kept only long enough to transcribe, then the temporary file is deleted.")
-        footer.font = .systemFont(ofSize: 10, weight: .regular)
-        footer.textColor = .tertiaryLabelColor
-        footer.alignment = .center
-        footer.frame = NSRect(x: 32, y: 28, width: 536, height: 13)
-        effect.addSubview(footer)
-
-        let footer2 = NSTextField(labelWithString: "Press Esc to cancel recording. Recent transcripts are available from the menu bar.")
-        footer2.font = .systemFont(ofSize: 10, weight: .regular)
-        footer2.textColor = .tertiaryLabelColor
-        footer2.alignment = .center
-        footer2.frame = NSRect(x: 32, y: 13, width: 536, height: 13)
-        effect.addSubview(footer2)
+        version.frame = NSRect(x: 470, y: 544, width: 180, height: 18)
+        parent.addSubview(version)
     }
 
-    private func setupShortcutCard(in parent: NSView, frame: NSRect) {
-        let card = makeCard(frame: frame)
-        parent.addSubview(card)
+    private func makeGeneralTab(frame: NSRect) -> NSView {
+        let view = NSView(frame: frame)
 
-        let headerIcon = makeSymbol("keyboard", size: 11, tint: .secondaryLabelColor)
-        headerIcon.frame = NSRect(x: 20, y: 148, width: 14, height: 14)
-        card.addSubview(headerIcon)
+        let shortcutsCard = makeCard(frame: NSRect(x: 16, y: 260, width: 600, height: 174))
+        view.addSubview(shortcutsCard)
+        addSectionHeader("SHORTCUTS", symbol: "keyboard", to: shortcutsCard, y: 144)
 
-        let headerLabel = NSTextField(labelWithString: "SHORTCUT")
-        headerLabel.font = .systemFont(ofSize: 10, weight: .semibold)
-        headerLabel.textColor = .secondaryLabelColor
-        headerLabel.frame = NSRect(x: 38, y: 147, width: 120, height: 14)
-        card.addSubview(headerLabel)
+        addLabel("Dictation", size: 13, weight: .semibold, to: shortcutsCard, frame: NSRect(x: 20, y: 108, width: 180, height: 20))
+        addSecondaryLabel("Record and paste speech at the cursor.", to: shortcutsCard, frame: NSRect(x: 20, y: 88, width: 310, height: 17))
+        styleShortcutButton(dictationShortcutButton, frame: NSRect(x: 390, y: 92, width: 184, height: 36), tag: 1, in: shortcutsCard)
 
-        let title = NSTextField(labelWithString: "Global shortcut")
-        title.font = .systemFont(ofSize: 14, weight: .semibold)
-        title.textColor = .labelColor
-        title.frame = NSRect(x: 20, y: 124, width: 320, height: 19)
-        card.addSubview(title)
+        addLabel("Command Mode", size: 13, weight: .semibold, to: shortcutsCard, frame: NSRect(x: 20, y: 57, width: 180, height: 20))
+        addSecondaryLabel("Select text, speak an instruction, replace it instantly.", to: shortcutsCard, frame: NSRect(x: 20, y: 37, width: 330, height: 17))
+        styleShortcutButton(commandShortcutButton, frame: NSRect(x: 390, y: 42, width: 184, height: 36), tag: 2, in: shortcutsCard)
 
-        let desc = NSTextField(labelWithString: "Open the recording panel from any app without changing focus.")
-        desc.font = .systemFont(ofSize: 11, weight: .regular)
-        desc.textColor = .secondaryLabelColor
-        desc.frame = NSRect(x: 20, y: 105, width: 430, height: 15)
-        card.addSubview(desc)
+        shortcutStatusLabel.font = .systemFont(ofSize: 10, weight: .regular)
+        shortcutStatusLabel.textColor = .tertiaryLabelColor
+        shortcutStatusLabel.frame = NSRect(x: 20, y: 10, width: 340, height: 15)
+        shortcutsCard.addSubview(shortcutStatusLabel)
 
-        shortcutButton.target = self
-        shortcutButton.action = #selector(startRecordingShortcut)
-        shortcutButton.bezelStyle = .rounded
-        shortcutButton.font = .monospacedSystemFont(ofSize: 14, weight: .semibold)
-        shortcutButton.wantsLayer = true
-        shortcutButton.layer?.cornerRadius = 9
-        shortcutButton.layer?.borderWidth = 0.5
-        shortcutButton.layer?.borderColor = NSColor.separatorColor.cgColor
-        shortcutButton.focusRingType = .none
-        shortcutButton.frame = NSRect(x: 20, y: 58, width: 212, height: 38)
-        card.addSubview(shortcutButton)
-
-        hintLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        hintLabel.textColor = .secondaryLabelColor
-        hintLabel.frame = NSRect(x: 248, y: 79, width: 268, height: 15)
-        card.addSubview(hintLabel)
-
-        statusLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
-        statusLabel.textColor = .tertiaryLabelColor
-        statusLabel.frame = NSRect(x: 248, y: 60, width: 268, height: 15)
-        card.addSubview(statusLabel)
-
-        let divider = NSBox(frame: NSRect(x: 20, y: 45, width: frame.width - 40, height: 1))
-        divider.boxType = .separator
-        card.addSubview(divider)
-
-        holdTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        holdTitleLabel.textColor = .labelColor
-        holdTitleLabel.frame = NSRect(x: 20, y: 23, width: 200, height: 17)
-        card.addSubview(holdTitleLabel)
-
-        holdDescLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
-        holdDescLabel.textColor = .tertiaryLabelColor
-        holdDescLabel.frame = NSRect(x: 20, y: 7, width: 390, height: 14)
-        card.addSubview(holdDescLabel)
-
+        let holdLabel = NSTextField(labelWithString: "Hold to talk")
+        holdLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        holdLabel.frame = NSRect(x: 390, y: 10, width: 120, height: 16)
+        shortcutsCard.addSubview(holdLabel)
         holdSwitch.target = self
         holdSwitch.action = #selector(toggleHoldToTalk)
         holdSwitch.controlSize = .small
-        holdSwitch.state = AppSettings.shared.holdToTalkEnabled ? .on : .off
-        holdSwitch.frame = NSRect(x: frame.width - 48, y: 14, width: 30, height: 20)
-        card.addSubview(holdSwitch)
-    }
+        holdSwitch.frame = NSRect(x: 544, y: 8, width: 30, height: 20)
+        shortcutsCard.addSubview(holdSwitch)
 
-    private func setupMicrophoneCard(in parent: NSView, frame: NSRect) {
-        let card = makeCard(frame: frame)
-        parent.addSubview(card)
-
-        let headerIcon = makeSymbol("mic.fill", size: 11, tint: .secondaryLabelColor)
-        headerIcon.frame = NSRect(x: 20, y: 114, width: 14, height: 14)
-        card.addSubview(headerIcon)
-
-        let headerLabel = NSTextField(labelWithString: "MICROPHONE")
-        headerLabel.font = .systemFont(ofSize: 10, weight: .semibold)
-        headerLabel.textColor = .secondaryLabelColor
-        headerLabel.frame = NSRect(x: 38, y: 113, width: 140, height: 14)
-        card.addSubview(headerLabel)
-
-        let title = NSTextField(labelWithString: "Input device")
-        title.font = .systemFont(ofSize: 14, weight: .semibold)
-        title.textColor = .labelColor
-        title.frame = NSRect(x: 20, y: 90, width: 220, height: 19)
-        card.addSubview(title)
-
-        let desc = NSTextField(labelWithString: "Auto follows the current macOS default, or choose a system input manually.")
-        desc.font = .systemFont(ofSize: 11, weight: .regular)
-        desc.textColor = .secondaryLabelColor
-        desc.frame = NSRect(x: 20, y: 71, width: 485, height: 15)
-        card.addSubview(desc)
+        let micCard = makeCard(frame: NSRect(x: 16, y: 70, width: 600, height: 172))
+        view.addSubview(micCard)
+        addSectionHeader("MICROPHONE", symbol: "mic.fill", to: micCard, y: 142)
+        addLabel("Input device", size: 13, weight: .semibold, to: micCard, frame: NSRect(x: 20, y: 108, width: 180, height: 20))
+        addSecondaryLabel("Auto follows the macOS default input, or choose a microphone manually.", to: micCard, frame: NSRect(x: 20, y: 88, width: 470, height: 17))
 
         microphonePopup.target = self
         microphonePopup.action = #selector(microphoneSelectionChanged)
         microphonePopup.controlSize = .small
-        microphonePopup.font = .systemFont(ofSize: 11.5, weight: .regular)
-        microphonePopup.frame = NSRect(x: 20, y: 30, width: 302, height: 30)
-        card.addSubview(microphonePopup)
+        microphonePopup.frame = NSRect(x: 20, y: 47, width: 330, height: 30)
+        micCard.addSubview(microphonePopup)
 
-        microphoneRefreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh microphones")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        microphoneRefreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh microphones")
         microphoneRefreshButton.bezelStyle = .inline
         microphoneRefreshButton.isBordered = false
-        microphoneRefreshButton.contentTintColor = .secondaryLabelColor
         microphoneRefreshButton.target = self
         microphoneRefreshButton.action = #selector(refreshMicrophonesClicked)
-        microphoneRefreshButton.frame = NSRect(x: 326, y: 31, width: 28, height: 28)
-        card.addSubview(microphoneRefreshButton)
+        microphoneRefreshButton.frame = NSRect(x: 356, y: 48, width: 28, height: 28)
+        micCard.addSubview(microphoneRefreshButton)
 
-        let liveLabel = NSTextField(labelWithString: "LIVE INPUT")
-        liveLabel.font = .systemFont(ofSize: 9.5, weight: .semibold)
-        liveLabel.textColor = .tertiaryLabelColor
-        liveLabel.frame = NSRect(x: 370, y: 52, width: 110, height: 13)
-        card.addSubview(liveLabel)
+        let live = NSTextField(labelWithString: "LIVE INPUT")
+        live.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        live.textColor = .tertiaryLabelColor
+        live.frame = NSRect(x: 410, y: 67, width: 120, height: 14)
+        micCard.addSubview(live)
 
-        microphoneLevelView.frame = NSRect(x: 370, y: 35, width: 146, height: 14)
-        card.addSubview(microphoneLevelView)
-
+        microphoneLevelView.frame = NSRect(x: 410, y: 48, width: 164, height: 14)
+        micCard.addSubview(microphoneLevelView)
         microphoneStatusLabel.font = .systemFont(ofSize: 9.5, weight: .medium)
         microphoneStatusLabel.textColor = .tertiaryLabelColor
-        microphoneStatusLabel.alignment = .left
-        microphoneStatusLabel.frame = NSRect(x: 370, y: 17, width: 146, height: 13)
-        card.addSubview(microphoneStatusLabel)
+        microphoneStatusLabel.frame = NSRect(x: 410, y: 29, width: 164, height: 14)
+        micCard.addSubview(microphoneStatusLabel)
 
-        let note = NSTextField(labelWithString: "Changes apply to the next recording immediately.")
-        note.font = .systemFont(ofSize: 9.5, weight: .regular)
-        note.textColor = .tertiaryLabelColor
-        note.frame = NSRect(x: 20, y: 12, width: 315, height: 13)
-        card.addSubview(note)
+        addSecondaryLabel("Changes apply to the next recording immediately.", to: micCard, frame: NSRect(x: 20, y: 16, width: 340, height: 16))
+
+        return view
     }
 
-    private func setupAPICard(in parent: NSView, frame: NSRect) {
-        let card = makeCard(frame: frame)
-        parent.addSubview(card)
+    private func makeIntelligenceTab(frame: NSRect) -> NSView {
+        let view = NSView(frame: frame)
 
-        let headerIcon = makeSymbol("key.fill", size: 11, tint: .secondaryLabelColor)
-        headerIcon.frame = NSRect(x: 20, y: 130, width: 14, height: 14)
-        card.addSubview(headerIcon)
+        let smartCard = makeCard(frame: NSRect(x: 16, y: 254, width: 600, height: 180))
+        view.addSubview(smartCard)
+        addSectionHeader("SMART PROCESSING", symbol: "sparkles", to: smartCard, y: 150)
+        addLabel("Polish after transcription", size: 13.5, weight: .semibold, to: smartCard, frame: NSRect(x: 20, y: 116, width: 260, height: 20))
+        addSecondaryLabel("Optional second Groq pass. Off keeps the original fastest paste path.", to: smartCard, frame: NSRect(x: 20, y: 96, width: 450, height: 17))
 
-        let headerLabel = NSTextField(labelWithString: "TRANSCRIPTION")
-        headerLabel.font = .systemFont(ofSize: 10, weight: .semibold)
-        headerLabel.textColor = .secondaryLabelColor
-        headerLabel.frame = NSRect(x: 38, y: 129, width: 140, height: 14)
-        card.addSubview(headerLabel)
+        smartProcessingSwitch.target = self
+        smartProcessingSwitch.action = #selector(toggleSmartProcessing)
+        smartProcessingSwitch.frame = NSRect(x: 544, y: 112, width: 30, height: 20)
+        smartCard.addSubview(smartProcessingSwitch)
 
-        let apiTitle = NSTextField(labelWithString: "Groq API key")
-        apiTitle.font = .systemFont(ofSize: 14, weight: .semibold)
-        apiTitle.textColor = .labelColor
-        apiTitle.frame = NSRect(x: 20, y: 105, width: 220, height: 19)
-        card.addSubview(apiTitle)
+        let modeLabel = NSTextField(labelWithString: "Mode")
+        modeLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        modeLabel.frame = NSRect(x: 20, y: 61, width: 80, height: 17)
+        smartCard.addSubview(modeLabel)
 
-        let apiDesc = NSTextField(labelWithString: "Used for whisper-large-v3-turbo. Free at console.groq.com")
-        apiDesc.font = .systemFont(ofSize: 11, weight: .regular)
-        apiDesc.textColor = .secondaryLabelColor
-        apiDesc.frame = NSRect(x: 20, y: 86, width: 350, height: 15)
-        card.addSubview(apiDesc)
+        smartModePopup.target = self
+        smartModePopup.action = #selector(smartModeChanged)
+        smartModePopup.frame = NSRect(x: 92, y: 54, width: 190, height: 30)
+        for mode in SmartProcessingMode.allCases {
+            smartModePopup.addItem(withTitle: mode.rawValue)
+            smartModePopup.lastItem?.representedObject = mode.rawValue
+        }
+        smartCard.addSubview(smartModePopup)
 
-        let link = NSButton(title: "Get free key →", target: self, action: #selector(openGroqConsole))
+        smartModeDescription.font = .systemFont(ofSize: 10.5, weight: .regular)
+        smartModeDescription.textColor = .secondaryLabelColor
+        smartModeDescription.maximumNumberOfLines = 2
+        smartModeDescription.lineBreakMode = .byWordWrapping
+        smartModeDescription.frame = NSRect(x: 300, y: 48, width: 274, height: 38)
+        smartCard.addSubview(smartModeDescription)
+
+        addSecondaryLabel("Raw = casing/proper names only • Clean = fillers/repeats • Polished = send-ready flow", to: smartCard, frame: NSRect(x: 20, y: 18, width: 554, height: 17))
+
+        let behaviorCard = makeCard(frame: NSRect(x: 16, y: 102, width: 600, height: 134))
+        view.addSubview(behaviorCard)
+        addSectionHeader("AI MODEL", symbol: "cpu", to: behaviorCard, y: 104)
+
+        addLabel("Groq text model", size: 12.5, weight: .medium, to: behaviorCard, frame: NSRect(x: 20, y: 65, width: 170, height: 18))
+        modelPopup.target = self
+        modelPopup.action = #selector(modelChanged)
+        modelPopup.frame = NSRect(x: 300, y: 58, width: 274, height: 30)
+        for model in GroqTextModel.allCases {
+            modelPopup.addItem(withTitle: model.title)
+            modelPopup.lastItem?.representedObject = model.rawValue
+        }
+        behaviorCard.addSubview(modelPopup)
+        addSecondaryLabel("Used by Smart Processing and Command Mode. Final speech transcription always uses Groq Whisper.", to: behaviorCard, frame: NSRect(x: 20, y: 27, width: 554, height: 17))
+
+        return view
+    }
+
+    private func makeAPITab(frame: NSRect) -> NSView {
+        let view = NSView(frame: frame)
+        let card = makeCard(frame: NSRect(x: 16, y: 176, width: 600, height: 258))
+        view.addSubview(card)
+        addSectionHeader("GROQ", symbol: "key.fill", to: card, y: 228)
+        addLabel("API key", size: 14, weight: .semibold, to: card, frame: NSRect(x: 20, y: 192, width: 200, height: 21))
+        addSecondaryLabel("One key powers Whisper transcription, Smart Processing and Command Mode.", to: card, frame: NSRect(x: 20, y: 170, width: 470, height: 17))
+
+        let link = NSButton(title: "Open Groq Console →", target: self, action: #selector(openGroqConsole))
         link.bezelStyle = .inline
-        link.font = .systemFont(ofSize: 11, weight: .medium)
-        link.contentTintColor = .systemBlue
-        link.frame = NSRect(x: 388, y: 86, width: 128, height: 15)
         link.isBordered = false
+        link.contentTintColor = .systemBlue
+        link.frame = NSRect(x: 420, y: 193, width: 154, height: 18)
         card.addSubview(link)
 
         apiKeyField.placeholderString = "gsk_..."
         apiKeyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        apiKeyField.frame = NSRect(x: 20, y: 38, width: 390, height: 30)
-        apiKeyField.focusRingType = .none
+        apiKeyField.frame = NSRect(x: 20, y: 117, width: 438, height: 32)
         apiKeyField.stringValue = AppSettings.shared.groqAPIKey
-        apiKeyField.wantsLayer = true
-        apiKeyField.layer?.cornerRadius = 7
         card.addSubview(apiKeyField)
 
         apiVisibleField.isHidden = true
         apiVisibleField.placeholderString = "gsk_..."
         apiVisibleField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         apiVisibleField.frame = apiKeyField.frame
-        apiVisibleField.focusRingType = .none
         apiVisibleField.stringValue = AppSettings.shared.groqAPIKey
-        apiVisibleField.wantsLayer = true
-        apiVisibleField.layer?.cornerRadius = 7
         card.addSubview(apiVisibleField)
 
-        toggleVisibilityButton.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Show")
+        toggleVisibilityButton.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Show API key")
         toggleVisibilityButton.bezelStyle = .inline
         toggleVisibilityButton.isBordered = false
-        toggleVisibilityButton.contentTintColor = .secondaryLabelColor
         toggleVisibilityButton.target = self
         toggleVisibilityButton.action = #selector(toggleAPIKeyVisibility)
-        toggleVisibilityButton.frame = NSRect(x: 416, y: 39, width: 28, height: 28)
+        toggleVisibilityButton.frame = NSRect(x: 464, y: 119, width: 28, height: 28)
         card.addSubview(toggleVisibilityButton)
 
         saveAPIKeyButton.target = self
         saveAPIKeyButton.action = #selector(saveAPIKey)
         saveAPIKeyButton.bezelStyle = .rounded
-        saveAPIKeyButton.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        saveAPIKeyButton.frame = NSRect(x: 452, y: 38, width: 64, height: 30)
-        saveAPIKeyButton.keyEquivalent = "\r"
-        saveAPIKeyButton.wantsLayer = true
-        saveAPIKeyButton.layer?.cornerRadius = 8
+        saveAPIKeyButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        saveAPIKeyButton.frame = NSRect(x: 500, y: 117, width: 74, height: 32)
         card.addSubview(saveAPIKeyButton)
 
-        let apiStatus = NSTextField(labelWithString: "Transcript is always copied to clipboard. Accessibility permission enables auto-paste.")
-        apiStatus.font = .systemFont(ofSize: 9.8, weight: .regular)
-        apiStatus.textColor = .tertiaryLabelColor
-        apiStatus.frame = NSRect(x: 20, y: 14, width: 496, height: 13)
-        card.addSubview(apiStatus)
+        apiStatusLabel.stringValue = "Audio files are temporary and deleted after transcription. Smart Processing is off by default."
+        apiStatusLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
+        apiStatusLabel.textColor = .secondaryLabelColor
+        apiStatusLabel.maximumNumberOfLines = 2
+        apiStatusLabel.frame = NSRect(x: 20, y: 74, width: 554, height: 34)
+        card.addSubview(apiStatusLabel)
+
+        let privacy = NSTextField(labelWithString: "The final transcript is always copied to the clipboard. Accessibility permission enables automatic paste back into the original app.")
+        privacy.font = .systemFont(ofSize: 10.5, weight: .regular)
+        privacy.textColor = .tertiaryLabelColor
+        privacy.maximumNumberOfLines = 2
+        privacy.lineBreakMode = .byWordWrapping
+        privacy.frame = NSRect(x: 20, y: 26, width: 554, height: 36)
+        card.addSubview(privacy)
+
+        return view
     }
 
     private func makeCard(frame: NSRect) -> NSBox {
@@ -389,58 +338,78 @@ final class SettingsWindowController: NSWindowController {
         box.fillColor = .controlBackgroundColor.withAlphaComponent(0.82)
         box.cornerRadius = 13
         box.wantsLayer = true
-        box.layer?.masksToBounds = false
         box.shadow = NSShadow()
-        box.shadow?.shadowColor = NSColor.black.withAlphaComponent(0.09)
+        box.shadow?.shadowColor = NSColor.black.withAlphaComponent(0.08)
         box.shadow?.shadowBlurRadius = 14
-        box.shadow?.shadowOffset = NSSize(width: 0, height: 5)
+        box.shadow?.shadowOffset = NSSize(width: 0, height: 4)
         return box
     }
 
-    private func makeSymbol(_ name: String, size: CGFloat, tint: NSColor) -> NSImageView {
-        let imageView = NSImageView()
-        imageView.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: size, weight: .medium))
-        imageView.contentTintColor = tint
-        return imageView
+    private func addSectionHeader(_ text: String, symbol: String, to parent: NSView, y: CGFloat) {
+        let image = NSImageView(frame: NSRect(x: 20, y: y, width: 14, height: 14))
+        image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10.5, weight: .medium))
+        image.contentTintColor = .secondaryLabelColor
+        parent.addSubview(image)
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: 39, y: y - 1, width: 180, height: 15)
+        parent.addSubview(label)
     }
 
-    // MARK: - Shortcut
-
-    private func refreshShortcut() {
-        shortcutButton.title = AppSettings.shared.hotkeyDisplayString
-        statusLabel.stringValue = isRecordingShortcut ? "Listening for new shortcut…" : "Click to change"
-        hintLabel.stringValue = AppSettings.shared.holdToTalkEnabled ? "Hold to talk enabled" : "Toggle mode"
-
-        if isRecordingShortcut {
-            shortcutButton.layer?.borderColor = NSColor.systemBlue.cgColor
-            shortcutButton.layer?.borderWidth = 1.2
-        } else {
-            shortcutButton.layer?.borderColor = NSColor.separatorColor.cgColor
-            shortcutButton.layer?.borderWidth = 0.5
-        }
+    private func addLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, to parent: NSView, frame: NSRect) {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.frame = frame
+        parent.addSubview(label)
     }
 
-    private func refreshHoldToggle() {
+    private func addSecondaryLabel(_ text: String, to parent: NSView, frame: NSRect) {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10.5, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.frame = frame
+        parent.addSubview(label)
+    }
+
+    private func styleShortcutButton(_ button: NSButton, frame: NSRect, tag: Int, in parent: NSView) {
+        button.tag = tag
+        button.target = self
+        button.action = #selector(startRecordingShortcut(_:))
+        button.bezelStyle = .rounded
+        button.font = .monospacedSystemFont(ofSize: 13.5, weight: .semibold)
+        button.frame = frame
+        parent.addSubview(button)
+    }
+
+    // MARK: - Refresh
+
+    private func refreshAllControls() {
+        dictationShortcutButton.title = AppSettings.shared.hotkeyDisplayString
+        commandShortcutButton.title = AppSettings.shared.commandHotkeyDisplayString
         holdSwitch.state = AppSettings.shared.holdToTalkEnabled ? .on : .off
-        hintLabel.stringValue = AppSettings.shared.holdToTalkEnabled ? "Hold to talk enabled" : "Toggle mode"
+        smartProcessingSwitch.state = AppSettings.shared.smartProcessingEnabled ? .on : .off
+        smartModePopup.selectItem(withTitle: AppSettings.shared.smartProcessingMode.rawValue)
+        modelPopup.selectItem(at: GroqTextModel.allCases.firstIndex(of: AppSettings.shared.groqTextModel) ?? 0)
+        smartModePopup.isEnabled = AppSettings.shared.smartProcessingEnabled
+        smartModeDescription.stringValue = AppSettings.shared.smartProcessingMode.detail
+        apiKeyField.stringValue = AppSettings.shared.groqAPIKey
+        apiVisibleField.stringValue = AppSettings.shared.groqAPIKey
+        shortcutStatusLabel.stringValue = activeShortcutCapture == nil
+            ? (AppSettings.shared.holdToTalkEnabled ? "Esc cancels • Release shortcut to transcribe." : "Esc cancels • Enter transcribes and pastes.")
+            : "Press a new shortcut. Esc cancels."
+        refreshMicrophoneDevices()
     }
 
-    @objc private func toggleHoldToTalk() {
-        AppSettings.shared.holdToTalkEnabled = holdSwitch.state == .on
-        refreshHoldToggle()
-        onShortcutChanged?()
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-    }
+    // MARK: - Shortcut handling
 
-    @objc private func startRecordingShortcut() {
-        guard !isRecordingShortcut else { return }
-        isRecordingShortcut = true
-        shortcutButton.title = "Press new shortcut…"
-        statusLabel.stringValue = "Use at least one modifier (⌘ ⌥ ⌃ ⇧). Esc cancels."
-        hintLabel.stringValue = "Listening…"
-        refreshShortcut()
-
+    @objc private func startRecordingShortcut(_ sender: NSButton) {
+        stopRecordingShortcut()
+        activeShortcutCapture = sender.tag == 2 ? .command : .dictation
+        shortcutStatusLabel.stringValue = "Press a new shortcut with at least one modifier. Esc cancels."
+        sender.title = "Press shortcut…"
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleShortcutEvent(event)
             return nil
@@ -448,12 +417,14 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func stopRecordingShortcut() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
-        isRecordingShortcut = false
-        refreshShortcut()
+        activeShortcutCapture = nil
+        dictationShortcutButton.title = AppSettings.shared.hotkeyDisplayString
+        commandShortcutButton.title = AppSettings.shared.commandHotkeyDisplayString
+        shortcutStatusLabel.stringValue = AppSettings.shared.holdToTalkEnabled
+            ? "Esc cancels • Release shortcut to transcribe."
+            : "Esc cancels • Enter transcribes and pastes."
     }
 
     private func handleShortcutEvent(_ event: NSEvent) {
@@ -461,15 +432,66 @@ final class SettingsWindowController: NSWindowController {
             stopRecordingShortcut()
             return
         }
+        guard let activeShortcutCapture else { return }
         let modifiers = ShortcutFormatter.carbonModifiers(from: event.modifierFlags)
         guard modifiers != 0 else {
-            statusLabel.stringValue = "Add a modifier: ⌘, ⌥, ⌃, or ⇧"
+            shortcutStatusLabel.stringValue = "Add ⌘, ⌥, ⌃, or ⇧ to the shortcut."
             return
         }
-        AppSettings.shared.hotkeyKeyCode = UInt32(event.keyCode)
-        AppSettings.shared.hotkeyModifiers = modifiers
+
+        let keyCode = UInt32(event.keyCode)
+        let conflictsWithOther: Bool
+        switch activeShortcutCapture {
+        case .dictation:
+            conflictsWithOther = keyCode == AppSettings.shared.commandHotkeyKeyCode && modifiers == AppSettings.shared.commandHotkeyModifiers
+        case .command:
+            conflictsWithOther = keyCode == AppSettings.shared.hotkeyKeyCode && modifiers == AppSettings.shared.hotkeyModifiers
+        }
+        guard !conflictsWithOther else {
+            shortcutStatusLabel.stringValue = "Dictation and Command Mode need different shortcuts."
+            return
+        }
+
+        switch activeShortcutCapture {
+        case .dictation:
+            AppSettings.shared.hotkeyKeyCode = keyCode
+            AppSettings.shared.hotkeyModifiers = modifiers
+        case .command:
+            AppSettings.shared.commandHotkeyKeyCode = keyCode
+            AppSettings.shared.commandHotkeyModifiers = modifiers
+        }
         stopRecordingShortcut()
         onShortcutChanged?()
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
+
+    @objc private func toggleHoldToTalk() {
+        AppSettings.shared.holdToTalkEnabled = holdSwitch.state == .on
+        shortcutStatusLabel.stringValue = AppSettings.shared.holdToTalkEnabled
+            ? "Esc cancels • Release shortcut to transcribe."
+            : "Esc cancels • Enter transcribes and pastes."
+        onShortcutChanged?()
+    }
+
+    // MARK: - Intelligence
+
+    @objc private func toggleSmartProcessing() {
+        AppSettings.shared.smartProcessingEnabled = smartProcessingSwitch.state == .on
+        smartModePopup.isEnabled = AppSettings.shared.smartProcessingEnabled
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
+
+    @objc private func smartModeChanged() {
+        guard let raw = smartModePopup.selectedItem?.representedObject as? String,
+              let mode = SmartProcessingMode(rawValue: raw) else { return }
+        AppSettings.shared.smartProcessingMode = mode
+        smartModeDescription.stringValue = mode.detail
+    }
+
+    @objc private func modelChanged() {
+        guard let raw = modelPopup.selectedItem?.representedObject as? String,
+              let model = GroqTextModel(rawValue: raw) else { return }
+        AppSettings.shared.groqTextModel = model
     }
 
     // MARK: - Microphone
@@ -484,20 +506,16 @@ final class SettingsWindowController: NSWindowController {
         microphonePopup.lastItem?.representedObject = ""
 
         for device in devices {
-            let suffix = device.id == defaultID ? "  • Default" : ""
+            let suffix = device.id == defaultID ? " • Default" : ""
             microphonePopup.addItem(withTitle: device.name + suffix)
             microphonePopup.lastItem?.representedObject = device.uid
         }
 
-        if let index = microphonePopup.itemArray.firstIndex(where: {
-            ($0.representedObject as? String ?? "") == selectedUID
-        }) {
+        if let index = microphonePopup.itemArray.firstIndex(where: { ($0.representedObject as? String ?? "") == selectedUID }) {
             microphonePopup.selectItem(at: index)
         } else {
             microphonePopup.selectItem(at: 0)
-            if !selectedUID.isEmpty {
-                AppSettings.shared.microphoneDeviceUID = nil
-            }
+            if !selectedUID.isEmpty { AppSettings.shared.microphoneDeviceUID = nil }
         }
     }
 
@@ -519,12 +537,10 @@ final class SettingsWindowController: NSWindowController {
             microphoneStatusLabel.stringValue = "Waiting for permission…"
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
-                    guard let self else { return }
-                    if granted {
-                        self.startMicrophonePreview()
-                    } else {
-                        self.microphoneStatusLabel.stringValue = "Permission required"
-                        self.microphoneStatusLabel.textColor = .systemRed
+                    if granted { self?.startMicrophonePreview() }
+                    else {
+                        self?.microphoneStatusLabel.stringValue = "Permission required"
+                        self?.microphoneStatusLabel.textColor = .systemRed
                     }
                 }
             }
@@ -536,7 +552,6 @@ final class SettingsWindowController: NSWindowController {
 
     private func updateMicrophoneLevel(_ level: Float) {
         microphoneLevelView.level = level
-
         switch level {
         case ..<0.08:
             microphoneStatusLabel.stringValue = "Speak to test"
@@ -557,7 +572,6 @@ final class SettingsWindowController: NSWindowController {
         let uid = microphonePopup.selectedItem?.representedObject as? String ?? ""
         AppSettings.shared.microphoneDeviceUID = uid.isEmpty ? nil : uid
         startMicrophonePreview()
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
 
     @objc private func refreshMicrophonesClicked() {
@@ -573,28 +587,28 @@ final class SettingsWindowController: NSWindowController {
             apiVisibleField.stringValue = apiKeyField.stringValue
             apiVisibleField.isHidden = false
             apiKeyField.isHidden = true
-            toggleVisibilityButton.image = NSImage(systemSymbolName: "eye", accessibilityDescription: "Hide")
+            toggleVisibilityButton.image = NSImage(systemSymbolName: "eye", accessibilityDescription: "Hide API key")
             apiVisibleField.becomeFirstResponder()
         } else {
             apiKeyField.stringValue = apiVisibleField.stringValue
             apiKeyField.isHidden = false
             apiVisibleField.isHidden = true
-            toggleVisibilityButton.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Show")
+            toggleVisibilityButton.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "Show API key")
             apiKeyField.becomeFirstResponder()
         }
     }
 
     @objc private func saveAPIKey() {
-        let value = isAPIKeyVisible ? apiVisibleField.stringValue : apiKeyField.stringValue
+        let value = (isAPIKeyVisible ? apiVisibleField.stringValue : apiKeyField.stringValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         AppSettings.shared.groqAPIKey = value
         apiKeyField.stringValue = value
         apiVisibleField.stringValue = value
         onAPIKeyChanged?()
-        statusLabel.stringValue = "API key saved ✓"
-        hintLabel.stringValue = ""
+        apiStatusLabel.stringValue = value.isEmpty ? "API key cleared." : "API key saved. Whisper, Smart Processing and Command Mode are ready."
         NSSound(named: .init("Tink"))?.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
-            self?.refreshShortcut()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            self?.apiStatusLabel.stringValue = "Audio files are temporary and deleted after transcription. Smart Processing is off by default."
         }
     }
 

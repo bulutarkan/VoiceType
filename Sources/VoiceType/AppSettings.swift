@@ -1,24 +1,57 @@
 import Carbon
 import Cocoa
 
+// MARK: - Intelligence settings
+
+enum SmartProcessingMode: String, CaseIterable {
+    case raw = "Raw"
+    case clean = "Clean"
+    case polished = "Polished"
+
+    var detail: String {
+        switch self {
+        case .raw: return "Correct spelling, casing and proper names while preserving your exact wording."
+        case .clean: return "Also remove fillers, repetitions and obvious false starts."
+        case .polished: return "Create fluent, send-ready text while preserving the original meaning."
+        }
+    }
+}
+
+enum GroqTextModel: String, CaseIterable {
+    case gptOSS20B = "openai/gpt-oss-20b"
+    case llama8B = "llama-3.1-8b-instant"
+    case llama70B = "llama-3.3-70b-versatile"
+
+    var title: String {
+        switch self {
+        case .gptOSS20B: return "GPT-OSS 20B — Fastest"
+        case .llama8B: return "Llama 3.1 8B — Fast"
+        case .llama70B: return "Llama 3.3 70B — Quality"
+        }
+    }
+}
+
 final class AppSettings {
     static let shared = AppSettings()
 
     private enum Key {
         static let hotkeyKeyCode = "hotkeyKeyCode"
         static let hotkeyModifiers = "hotkeyModifiers"
+        static let commandHotkeyKeyCode = "commandHotkeyKeyCode"
+        static let commandHotkeyModifiers = "commandHotkeyModifiers"
         static let groqAPIKey = "groqAPIKey"
         static let holdToTalk = "holdToTalkEnabled"
         static let microphoneDeviceUID = "microphoneDeviceUID"
+        static let smartProcessingEnabled = "smartProcessingEnabled"
+        static let smartProcessingMode = "smartProcessingMode"
+        static let groqTextModel = "groqTextModel"
     }
 
     private let defaults = UserDefaults.standard
 
     var hotkeyKeyCode: UInt32 {
         get {
-            if defaults.object(forKey: Key.hotkeyKeyCode) == nil {
-                return UInt32(kVK_Space)
-            }
+            if defaults.object(forKey: Key.hotkeyKeyCode) == nil { return UInt32(kVK_Space) }
             return UInt32(defaults.integer(forKey: Key.hotkeyKeyCode))
         }
         set { defaults.set(Int(newValue), forKey: Key.hotkeyKeyCode) }
@@ -26,9 +59,7 @@ final class AppSettings {
 
     var hotkeyModifiers: UInt32 {
         get {
-            if defaults.object(forKey: Key.hotkeyModifiers) == nil {
-                return UInt32(optionKey)
-            }
+            if defaults.object(forKey: Key.hotkeyModifiers) == nil { return UInt32(optionKey) }
             return UInt32(defaults.integer(forKey: Key.hotkeyModifiers))
         }
         set { defaults.set(Int(newValue), forKey: Key.hotkeyModifiers) }
@@ -36,6 +67,28 @@ final class AppSettings {
 
     var hotkeyDisplayString: String {
         ShortcutFormatter.displayString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers)
+    }
+
+    var commandHotkeyKeyCode: UInt32 {
+        get {
+            if defaults.object(forKey: Key.commandHotkeyKeyCode) == nil { return UInt32(kVK_Space) }
+            return UInt32(defaults.integer(forKey: Key.commandHotkeyKeyCode))
+        }
+        set { defaults.set(Int(newValue), forKey: Key.commandHotkeyKeyCode) }
+    }
+
+    var commandHotkeyModifiers: UInt32 {
+        get {
+            if defaults.object(forKey: Key.commandHotkeyModifiers) == nil {
+                return UInt32(controlKey) | UInt32(optionKey)
+            }
+            return UInt32(defaults.integer(forKey: Key.commandHotkeyModifiers))
+        }
+        set { defaults.set(Int(newValue), forKey: Key.commandHotkeyModifiers) }
+    }
+
+    var commandHotkeyDisplayString: String {
+        ShortcutFormatter.displayString(keyCode: commandHotkeyKeyCode, modifiers: commandHotkeyModifiers)
     }
 
     var groqAPIKey: String {
@@ -50,19 +103,31 @@ final class AppSettings {
 
     var microphoneDeviceUID: String? {
         get {
-            guard let value = defaults.string(forKey: Key.microphoneDeviceUID), !value.isEmpty else {
-                return nil
-            }
+            guard let value = defaults.string(forKey: Key.microphoneDeviceUID), !value.isEmpty else { return nil }
             return value
         }
         set {
-            if let newValue, !newValue.isEmpty {
-                defaults.set(newValue, forKey: Key.microphoneDeviceUID)
-            } else {
-                defaults.removeObject(forKey: Key.microphoneDeviceUID)
-            }
+            if let newValue, !newValue.isEmpty { defaults.set(newValue, forKey: Key.microphoneDeviceUID) }
+            else { defaults.removeObject(forKey: Key.microphoneDeviceUID) }
         }
     }
+
+    // Off by default so the current low-latency transcription path stays unchanged.
+    var smartProcessingEnabled: Bool {
+        get { defaults.bool(forKey: Key.smartProcessingEnabled) }
+        set { defaults.set(newValue, forKey: Key.smartProcessingEnabled) }
+    }
+
+    var smartProcessingMode: SmartProcessingMode {
+        get { SmartProcessingMode(rawValue: defaults.string(forKey: Key.smartProcessingMode) ?? "") ?? .clean }
+        set { defaults.set(newValue.rawValue, forKey: Key.smartProcessingMode) }
+    }
+
+    var groqTextModel: GroqTextModel {
+        get { GroqTextModel(rawValue: defaults.string(forKey: Key.groqTextModel) ?? "") ?? .gptOSS20B }
+        set { defaults.set(newValue.rawValue, forKey: Key.groqTextModel) }
+    }
+
 }
 
 enum ShortcutFormatter {
@@ -110,18 +175,14 @@ enum ShortcutFormatter {
         case kVK_F11: return "F11"
         case kVK_F12: return "F12"
         default:
-            if let char = keyEquivalent(for: keyCode), !char.isEmpty {
-                return char.uppercased()
-            }
+            if let char = keyEquivalent(for: keyCode), !char.isEmpty { return char.uppercased() }
             return "Key \(keyCode)"
         }
     }
 
     private static func keyEquivalent(for keyCode: UInt32) -> String? {
         guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let layoutData = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
-            return nil
-        }
+              let layoutData = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
 
         let data = unsafeBitCast(layoutData, to: CFData.self)
         let keyboardLayout = unsafeBitCast(CFDataGetBytePtr(data), to: UnsafePointer<UCKeyboardLayout>.self)
@@ -140,7 +201,6 @@ enum ShortcutFormatter {
             &length,
             &chars
         )
-
         guard status == noErr, length > 0 else { return nil }
         return String(utf16CodeUnits: chars, count: length)
     }
