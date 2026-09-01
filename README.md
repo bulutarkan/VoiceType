@@ -33,13 +33,14 @@ Typical flow: press shortcut, speak, confirm, text appears.
 - Real-time waveform with 60 bars (`CALayer`, `AVAudioEngine` tap, amplitude smoothing).
 - Timer in `m:ss` format.
 - Controls for Cancel (`xmark` / `Esc`) and Confirm (`checkmark`).
-- Hold mode hint: "hold, release to send, Esc to cancel".
+- Hold mode keeps the same clean waveform layout without an extra instruction line.
 - States for recording, transcribing (spinner), and inline error with retry.
 
 ### 4. Audio Recording
 
 - `AVAudioEngine` input node tap, 1024 buffer, writes to temporary WAV file in `/tmp` (`vt_*.wav`).
 - Microphone permission handled via `AVCaptureDevice`.
+- System microphone selection supports Auto (current macOS default) or a manually selected Core Audio input device.
 - Waveform amplitudes computed per buffer and streamed to the panel on the main thread.
 - Automatic cleanup on cancel or after successful transcription.
 
@@ -65,10 +66,11 @@ Typical flow: press shortcut, speak, confirm, text appears.
 
 ### 8. Settings Window
 
-- Window size 560 x 520, `fullSizeContentView`, transparent title bar, `hudWindow` background.
+- Window size 600 x 680, `fullSizeContentView`, transparent title bar, `hudWindow` background.
 - Header with application icon, title, and version.
 - Cards with rounded corners, border, and shadow:
   - Shortcut card with keycap button, mode indicator, and hold-to-talk switch.
+  - Microphone card with Auto/system input selection, device refresh, and a live green/orange/red level meter for speaking tests.
   - Transcription card with secure API key field, show/hide toggle, Save action, and link to `console.groq.com/keys`.
 - Footer notes about privacy and usage.
 

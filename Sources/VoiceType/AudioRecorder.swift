@@ -15,6 +15,7 @@ class AudioRecorder: NSObject {
         let engine = AVAudioEngine()
         audioEngine = engine
         let input = engine.inputNode
+        try? SystemAudioInput.configure(input, deviceUID: AppSettings.shared.microphoneDeviceUID)
         let fmt = input.outputFormat(forBus: 0)
         audioFile = try? AVAudioFile(forWriting: url, settings: fmt.settings)
 

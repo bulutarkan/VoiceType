@@ -9,6 +9,7 @@ final class AppSettings {
         static let hotkeyModifiers = "hotkeyModifiers"
         static let groqAPIKey = "groqAPIKey"
         static let holdToTalk = "holdToTalkEnabled"
+        static let microphoneDeviceUID = "microphoneDeviceUID"
     }
 
     private let defaults = UserDefaults.standard
@@ -45,6 +46,22 @@ final class AppSettings {
     var holdToTalkEnabled: Bool {
         get { defaults.bool(forKey: Key.holdToTalk) }
         set { defaults.set(newValue, forKey: Key.holdToTalk) }
+    }
+
+    var microphoneDeviceUID: String? {
+        get {
+            guard let value = defaults.string(forKey: Key.microphoneDeviceUID), !value.isEmpty else {
+                return nil
+            }
+            return value
+        }
+        set {
+            if let newValue, !newValue.isEmpty {
+                defaults.set(newValue, forKey: Key.microphoneDeviceUID)
+            } else {
+                defaults.removeObject(forKey: Key.microphoneDeviceUID)
+            }
+        }
     }
 }
 

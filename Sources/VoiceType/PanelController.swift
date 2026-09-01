@@ -217,18 +217,13 @@ class RecordingView: NSView {
                 statusLabel.isHidden = true
                 spinner.isHidden = true
                 errorLabel.isHidden = true
-                // hint centered under waveform if hold enabled?
-                // For now hint hidden in recording unless holdToTalk enabled and we want to show
-                waveform.frame = CGRect(x: cancelBtn.frame.maxX+8, y: 2, width: max(0, tx-6-(cancelBtn.frame.maxX+8)), height: h-4)
-                if AppSettings.shared.holdToTalkEnabled {
-                    hintLabel.stringValue = "hold • release to send  •  esc to cancel"
-                    hintLabel.isHidden = false
-                    hintLabel.frame = CGRect(x: waveform.frame.minX, y: 1, width: waveform.frame.width, height: 10)
-                    // shift waveform up a bit to make room
-                    waveform.frame = CGRect(x: waveform.frame.minX, y: 8, width: waveform.frame.width, height: h-12)
-                } else {
-                    hintLabel.isHidden = true
-                }
+                hintLabel.isHidden = true
+                waveform.frame = CGRect(
+                    x: cancelBtn.frame.maxX + 8,
+                    y: 2,
+                    width: max(0, tx - 6 - (cancelBtn.frame.maxX + 8)),
+                    height: h - 4
+                )
             }
 
         case .error:
